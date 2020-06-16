@@ -6,6 +6,7 @@ package ipc
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/google/syzkaller/pkg/log"
 	"io"
 	"io/ioutil"
 	"os"
@@ -128,6 +129,22 @@ const (
 	extraReplyIndex = 0xffffffff // uint32(-1)
 )
 
+//============================
+//some structs I added to facilitate capturing Exec in a container
+type ExecInput struct {
+	Opts *ExecOpts
+	P *prog.Prog
+}
+
+type ExecOutput struct {
+	Output []byte
+	Info *ProgInfo
+	Hanged bool
+	Err0 error
+}
+
+//============================
+
 func SandboxToFlags(sandbox string) (EnvFlags, error) {
 	switch sandbox {
 	case "none":
@@ -243,6 +260,68 @@ func (env *Env) Close() error {
 
 var rateLimit = time.NewTicker(1 * time.Second)
 
+////TODO call this in place of Exec in all parts of the system
+//func ExecWrapper(env *Env, opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInfo, hanged bool, err0 error) {
+//	log.Logf(1, "called execWrapper for docker container")
+//	output = nil
+//	info = nil
+//	hanged = false
+//	err0 = nil
+//	temp, err := ioutil.TempDir("", "exec")
+//	if err != nil {
+//		log.Logf(1, "could not make temp dir to hold serialized files: %v", err)
+//		return
+//	}
+//	defer os.Remove(temp)
+//	envFile, err := json.Marshal(env)
+//	filename := temp + "/env.json"
+//	err = ioutil.WriteFile(filename, envFile, 0644)
+//	if err != nil {
+//		log.Logf(1, "error writing serialized env: %v", err)
+//		return
+//	}
+//	input := ExecInput{Opts: opts, P: p}
+//	inputFile, err := json.Marshal(input)
+//	filename = temp + "/input.json"
+//	err = ioutil.WriteFile(filename, inputFile, 0644)
+//	if err != nil {
+//		log.Logf(1, "error writing serialized input; %v", err)
+//		return
+//	}
+//	command := osutil.Command("docker", "run", "-a", "stdin", "-a", "stdout", "-i",
+//		"-v", temp + ":/exec:ro", "-v", "/sys/kernel/debug:/sys/kernel/debug:rw",
+//		"syzkaller-image")
+//	log.Logf(1, "Fuzzer: Starting docker container...")
+//	//run command and read serialized output, if any exists
+//	outputStream, err := command.Output()
+//	if err != nil {
+//		//check if daemon is still running in the event of error. Did we crash it?
+//		if dockerError := checkDockerDaemon(); dockerError != nil {
+//			err = dockerError
+//			log.Logf(1, "docker machine broke: %v", err)
+//			return
+//		}
+//		log.Logf(1, "error reading container process output: %v", err)
+//		return
+//	}
+//	outputStruct := ExecOutput{}
+//	err = json.Unmarshal(outputStream, &outputStruct)
+//	if err != nil {
+//		log.Logf(1, "error unmarshaling json: %v", err)
+//		return
+//	}
+//	return outputStruct.Output, outputStruct.Info, outputStruct.Hanged, outputStruct.Err0
+//}
+//
+//func checkDockerDaemon() error {
+//	command := osutil.Command("systemctl", "check", "docker")
+//	_ = command.Start()
+//	if err := command.Wait(); err != nil {
+//		return errors.New(fmt.Sprintf("systemctl check docker returned code %v", err))
+//	}
+//	return nil
+//}
+
 // Exec starts executor binary to execute program p and returns information about the execution:
 // output: process output
 // info: per-call info
@@ -276,17 +355,22 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInf
 		atomic.AddUint64(&env.StatRestarts, 1)
 		env.cmd, err0 = makeCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath)
 		if err0 != nil {
+			log.Logf(1, "error creating command: %v", err0)
 			return
 		}
 	}
 	output, hanged, err0 = env.cmd.exec(opts, progData)
 	if err0 != nil {
+		log.Logf(1, "cmd exec failed")
 		env.cmd.close()
 		env.cmd = nil
 		return
 	}
 
 	info, err0 = env.parseOutput(p)
+	if err0 != nil {
+		log.Logf(1, "Error parsing output: %v", err0)
+	}
 	if info != nil && env.config.Flags&FlagSignal == 0 {
 		addFallbackSignal(p, info)
 	}
@@ -581,6 +665,7 @@ func makeCommand(pid int, bin []string, config *Config, inFile, outFile *os.File
 	c.readDone = make(chan []byte, 1)
 	c.exited = make(chan struct{})
 
+	log.Logf(1, "executor commandline is: %v", bin)
 	cmd := osutil.Command(bin[0], bin[1:]...)
 	if inFile != nil && outFile != nil {
 		cmd.ExtraFiles = []*os.File{inFile, outFile}
@@ -620,6 +705,7 @@ func makeCommand(pid int, bin []string, config *Config, inFile, outFile *os.File
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start executor binary: %v", err)
 	}
+	log.Logf(1, "newly started executor has PID %d", cmd.Process.Pid)
 	c.cmd = cmd
 	wp.Close()
 	// Note: we explicitly close inwp before calling handshake even though we defer it above.
@@ -629,6 +715,7 @@ func makeCommand(pid int, bin []string, config *Config, inFile, outFile *os.File
 
 	if c.config.UseForkServer {
 		if err := c.handshake(); err != nil {
+			log.Logf(1, "Handshake error on PID %d: %v", c.pid, err)
 			return nil, err
 		}
 	}

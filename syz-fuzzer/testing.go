@@ -31,19 +31,24 @@ type checkArgs struct {
 	featureFlags   map[string]csource.Feature
 }
 
+//changed this to not crash if the manager isn't reachable for testing purposes
 func testImage(hostAddr string, args *checkArgs) {
-	log.Logf(0, "connecting to host at %v", hostAddr)
-	conn, err := rpctype.Dial(hostAddr)
-	if err != nil {
-		log.Fatalf("BUG: failed to connect to host: %v", err)
-	}
-	conn.Close()
+	log.Logf(0, "skipping host connect test")
+	//log.Logf(0, "connecting to host at %v", hostAddr)
+	//conn, err := rpctype.Dial(hostAddr)
+	//if err != nil {
+	//	log.Logf(1, "BUG: failed to connect to host: %v", err)
+	//} else {
+	//	_ = conn.Close()
+	//}
 	if _, err := checkMachine(args); err != nil {
 		log.Fatalf("BUG: %v", err)
 	}
 }
 
+
 func runTest(target *prog.Target, manager *rpctype.RPCClient, name, executor string) {
+	log.Logf(1, "beginning test")
 	pollReq := &rpctype.RunTestPollReq{Name: name}
 	for {
 		req := new(rpctype.RunTestPollRes)
@@ -55,7 +60,7 @@ func runTest(target *prog.Target, manager *rpctype.RPCClient, name, executor str
 		}
 		test := convertTestReq(target, req)
 		if test.Err == nil {
-			runtest.RunTest(test, executor)
+			runTest(target, manager, name, executor)
 		}
 		reply := &rpctype.RunTestDoneArgs{
 			Name:   name,
@@ -71,6 +76,7 @@ func runTest(target *prog.Target, manager *rpctype.RPCClient, name, executor str
 		}
 	}
 }
+
 
 func convertTestReq(target *prog.Target, req *rpctype.RunTestPollRes) *runtest.RunRequest {
 	test := &runtest.RunRequest{
@@ -147,6 +153,7 @@ func checkMachine(args *checkArgs) (*rpctype.CheckArgs, error) {
 	if err := checkSimpleProgram(args, features); err != nil {
 		return nil, err
 	}
+	log.Logf(1, "no problem checking simple program")
 	return checkCalls(args, features)
 }
 
@@ -243,6 +250,7 @@ func checkSimpleProgram(args *checkArgs, features *host.Features) error {
 	defer env.Close()
 	p := args.target.DataMmapProg()
 	output, info, hanged, err := env.Exec(args.ipcExecOpts, p)
+	//output, info, hanged, err := ipc.ExecWrapper(env, args.ipcExecOpts, p)
 	if err != nil {
 		return fmt.Errorf("program execution failed: %v\n%s", err, output)
 	}

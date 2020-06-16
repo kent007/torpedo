@@ -159,6 +159,7 @@ func (ctx *Context) execute(pid int, env *ipc.Env, entry *prog.LogEntry) {
 		ctx.logProgram(pid, entry.P, callOpts)
 	}
 	output, info, hanged, err := env.Exec(callOpts, entry.P)
+	//output, info, hanged, err := ipc.ExecWrapper(env, callOpts, entry.P)
 	if ctx.config.Flags&ipc.FlagDebug != 0 || err != nil {
 		log.Logf(0, "result: hanged=%v err=%v\n\n%s", hanged, err, output)
 	}

@@ -61,7 +61,10 @@ GITREVDATE=$(shell git log -n 1 --format="%ad")
 # Reduces build time and binary sizes considerably.
 # That's only needed if you use gdb or nm.
 # If you need that, build manually without these flags.
-GOFLAGS := "-ldflags=-s -w -X github.com/google/syzkaller/prog.GitRevision=$(REV) -X 'github.com/google/syzkaller/prog.gitRevisionDate=$(GITREVDATE)'"
+# GOFLAGS := -ldflags="-s -w -X github.com/google/syzkaller/prog.GitRevision=$(REV) -X 'github.com/google/syzkaller/prog.gitRevisionDate=$(GITREVDATE)'"
+
+#remove -s and -w to add back debug symbols, gcflags disabled optimizations
+GOFLAGS := -gcflags="all=-N -l" -ldflags="-X github.com/google/syzkaller/prog.GitRevision=$(REV) -X 'github.com/google/syzkaller/prog.gitRevisionDate=$(GITREVDATE)'"
 
 GOHOSTFLAGS := $(GOFLAGS)
 GOTARGETFLAGS := $(GOFLAGS)
@@ -107,8 +110,8 @@ endif
 	arch_test presubmit presubmit_parallel clean
 
 all: host target
-host: manager runtest repro mutate prog2c db upgrade
-target: fuzzer execprog stress executor
+host: manager runtest repro mutate prog2c upgrade db
+target: fuzzer execprog stress executor dockerbootstrap
 
 executor: descriptions
 ifneq ("$(BUILDOS)", "$(NATIVEBUILDOS)")
@@ -127,7 +130,7 @@ else
 	mkdir -p ./bin/$(TARGETOS)_$(TARGETARCH)
 	$(CC) -o ./bin/$(TARGETOS)_$(TARGETARCH)/syz-executor$(EXE) executor/executor.cc \
 		$(ADDCFLAGS) $(CFLAGS) -DGOOS_$(TARGETOS)=1 -DGOARCH_$(TARGETARCH)=1 \
-		-DHOSTGOOS_$(HOSTOS)=1 -DGIT_REVISION=\"$(REV)\"
+		-DHOSTGOOS_$(HOSTOS)=1 -DGIT_REVISION=\"$(REV)\" -g
 endif
 endif
 
@@ -151,6 +154,9 @@ runtest: descriptions
 
 fuzzer: descriptions
 	GOOS=$(TARGETGOOS) GOARCH=$(TARGETGOARCH) $(GO) build $(GOTARGETFLAGS) -o ./bin/$(TARGETOS)_$(TARGETVMARCH)/syz-fuzzer$(EXE) github.com/google/syzkaller/syz-fuzzer
+
+dockerbootstrap: descriptions
+	GOOD=$(TARGETGOOS) GOARCH=$(TARGETGOARCH) $(GO) build $(GOTARGETFLAGS) -o ./bin/$(TARGETOS)_$(TARGETVMARCH)/docker-bootstrap github.com/google/syzkaller/syz-fuzzer-docker
 
 execprog: descriptions
 	GOOS=$(TARGETGOOS) GOARCH=$(TARGETGOARCH) $(GO) build $(GOTARGETFLAGS) -o ./bin/$(TARGETOS)_$(TARGETVMARCH)/syz-execprog$(EXE) github.com/google/syzkaller/tools/syz-execprog

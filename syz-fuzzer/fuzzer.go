@@ -219,6 +219,7 @@ func main() {
 	}
 
 	if *flagRunTest {
+		log.Logf(1, "CALLING RUNTEST")
 		runTest(target, manager, *flagName, config.Executor)
 		return
 	}

@@ -30,6 +30,8 @@ import (
 	_ "github.com/google/syzkaller/vm/odroid"
 	_ "github.com/google/syzkaller/vm/qemu"
 	_ "github.com/google/syzkaller/vm/vmm"
+	_ "github.com/google/syzkaller/vm/docker"
+	_ "github.com/google/syzkaller/vm/dockerhost"
 )
 
 type Pool struct {
