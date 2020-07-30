@@ -1,7 +1,8 @@
 // Copyright 2015 syzkaller project authors. All rights reserved.
 // Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
-//this package piggybacks off the existing qemu VM impl to boot docker containers and run them on the VM
+//this package piggybacks off the existing qemu VM impl to boot docker containers, but runs them on the host
+//for communitcation purposes, this has to also be run from a containter (since gvisor containers won't let you be on the host)
 package docker
 
 import (
@@ -13,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/syzkaller/pkg/config"
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/google/syzkaller/sys/targets"
@@ -21,7 +21,8 @@ import (
 )
 
 const (
-	hostAddr = "10.0.2.10"
+	//my laptop is 172.17.0.1
+	hostAddr = "172.17.0.2"
 )
 
 func init() {
@@ -209,36 +210,12 @@ func ctor(env *vmimpl.Env) (vmimpl.Pool, error) {
 		QemuArgs:    archConfig.QemuArgs,
 		Snapshot:    true,
 	}
-	if err := config.LoadData(env.Config, cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse qemu vm config: %v", err)
-	}
 	if cfg.Count < 1 || cfg.Count > 128 {
 		return nil, fmt.Errorf("invalid config param count: %v, want [1, 128]", cfg.Count)
 	}
 	if env.Debug && cfg.Count > 1 {
 		log.Logf(0, "limiting number of VMs from %v to 1 in debug mode", cfg.Count)
 		cfg.Count = 1
-	}
-	if _, err := exec.LookPath(cfg.Qemu); err != nil {
-		return nil, err
-	}
-	if env.Image == "9p" {
-		if env.OS != "linux" {
-			return nil, fmt.Errorf("9p image is supported for linux only")
-		}
-		if cfg.Kernel == "" {
-			return nil, fmt.Errorf("9p image requires kernel")
-		}
-	} else {
-		if !osutil.IsExist(env.Image) {
-			return nil, fmt.Errorf("image file '%v' does not exist", env.Image)
-		}
-	}
-	if cfg.CPU <= 0 || cfg.CPU > 1024 {
-		return nil, fmt.Errorf("bad qemu cpu: %v, want [1-1024]", cfg.CPU)
-	}
-	if cfg.Mem < 128 || cfg.Mem > 1048576 {
-		return nil, fmt.Errorf("bad qemu mem: %v, want [128-1048576]", cfg.Mem)
 	}
 	cfg.Kernel = osutil.Abs(cfg.Kernel)
 	cfg.Initrd = osutil.Abs(cfg.Initrd)
@@ -257,32 +234,8 @@ func (pool *Pool) Count() int {
 
 //create a new pool
 func (pool *Pool) Create(workdir string, index int) (vmimpl.Instance, error) {
-	sshkey := pool.env.SSHKey
-	sshuser := pool.env.SSHUser
-	if pool.env.Image == "9p" {
-		sshkey = filepath.Join(workdir, "key")
-		sshuser = "root"
-		if _, err := osutil.RunCmd(10*time.Minute, "", "ssh-keygen", "-t", "rsa", "-b", "2048",
-			"-N", "", "-C", "", "-f", sshkey); err != nil {
-			return nil, err
-		}
-		initFile := filepath.Join(workdir, "init.sh")
-		if err := osutil.WriteExecFile(initFile, []byte(strings.Replace(initScript, "{{KEY}}", sshkey, -1))); err != nil {
-			return nil, fmt.Errorf("failed to create init file: %v", err)
-		}
-	}
-
-	for i := 0; ; i++ {
-		inst, err := pool.ctor(workdir, sshkey, sshuser, index)
-		if err == nil {
-			return inst, nil
-		}
-		// Older qemu prints "could", newer -- "Could".
-		if i < 1000 && strings.Contains(err.Error(), "ould not set up host forwarding rule") {
-			continue
-		}
-		return nil, err
-	}
+	inst, err := pool.ctor(workdir, "", "", index)
+	return inst, err
 }
 
 //constructor for the VM
@@ -314,10 +267,10 @@ func (inst *instance) Close() {
 	log.Logf(1, "no VM was started, Close does nothing")
 }
 
-//necessary to return loopback, since we're running on the host
+//need to return the address of the manager's container inside the docker bridge network
+//this allows the manager to chat with the containers created by the bootstrap
 func (inst *instance) Forward(port int) (string, error) {
-	addr := "127.0.0.1"
-	return fmt.Sprintf("%v:%v", addr, port), nil
+	return fmt.Sprintf("%v:%v", hostAddr, port), nil
 }
 
 func (inst *instance) targetDir() string {
@@ -334,12 +287,12 @@ func (inst *instance) Copy(hostSrc string) (string, error) {
 	if base == "syz-executor" {
 		//this is already on the docker image loaded in the VM, so it won't be necessary to copy it
 		//we need to specify the path inside the container though
-		return "/syz-executor", nil
+		return "/bin/linux_amd64/syz-executor", nil
 	}
 	if base == "syz-fuzzer" {
 		//this is the entrypoint of the docker container
 		//on the host, return the location of the bootstrap
-		return "/home/kent/gopath/src/github.com/google/syzkaller/bin/linux_amd64/docker-bootstrap", nil
+		return "/bin/linux_amd64/docker-bootstrap", nil
 	}
 	log.Logf(1, "'Copy' was called for something besides the executor or the fuzzer, so ignoring it")
 	return "", nil

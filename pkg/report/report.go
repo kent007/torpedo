@@ -86,8 +86,8 @@ func (t Type) String() string {
 // NewReporter creates reporter for the specified OS/Type.
 func NewReporter(cfg *mgrconfig.Config) (Reporter, error) {
 	typ := cfg.TargetOS
-	if cfg.Type == "gvisor" {
-		typ = cfg.Type
+	if cfg.Type == "gvisor" || cfg.Type == "dockerhost" {
+		typ = "gvisor"
 	}
 	ctor := ctors[typ]
 	if ctor == nil {

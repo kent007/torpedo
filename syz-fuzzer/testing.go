@@ -46,7 +46,6 @@ func testImage(hostAddr string, args *checkArgs) {
 	}
 }
 
-
 func runTest(target *prog.Target, manager *rpctype.RPCClient, name, executor string) {
 	log.Logf(1, "beginning test")
 	pollReq := &rpctype.RunTestPollReq{Name: name}
@@ -76,7 +75,6 @@ func runTest(target *prog.Target, manager *rpctype.RPCClient, name, executor str
 		}
 	}
 }
-
 
 func convertTestReq(target *prog.Target, req *rpctype.RunTestPollRes) *runtest.RunRequest {
 	test := &runtest.RunRequest{
@@ -250,7 +248,6 @@ func checkSimpleProgram(args *checkArgs, features *host.Features) error {
 	defer env.Close()
 	p := args.target.DataMmapProg()
 	output, info, hanged, err := env.Exec(args.ipcExecOpts, p)
-	//output, info, hanged, err := ipc.ExecWrapper(env, args.ipcExecOpts, p)
 	if err != nil {
 		return fmt.Errorf("program execution failed: %v\n%s", err, output)
 	}

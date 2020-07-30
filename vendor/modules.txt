@@ -11,10 +11,46 @@ cloud.google.com/go/internal/version
 ## explicit
 cloud.google.com/go/storage
 # github.com/BurntSushi/toml v0.3.1
-## explicit
 github.com/BurntSushi/toml
-# github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e
+# github.com/Microsoft/go-winio v0.4.14
 ## explicit
+github.com/Microsoft/go-winio
+github.com/Microsoft/go-winio/pkg/guid
+# github.com/docker/distribution v2.7.1+incompatible
+## explicit
+github.com/docker/distribution/digestset
+github.com/docker/distribution/reference
+# github.com/docker/docker v1.13.1
+## explicit
+github.com/docker/docker/api/types
+github.com/docker/docker/api/types/blkiodev
+github.com/docker/docker/api/types/container
+github.com/docker/docker/api/types/events
+github.com/docker/docker/api/types/filters
+github.com/docker/docker/api/types/mount
+github.com/docker/docker/api/types/network
+github.com/docker/docker/api/types/reference
+github.com/docker/docker/api/types/registry
+github.com/docker/docker/api/types/strslice
+github.com/docker/docker/api/types/swarm
+github.com/docker/docker/api/types/time
+github.com/docker/docker/api/types/versions
+github.com/docker/docker/api/types/volume
+github.com/docker/docker/client
+github.com/docker/docker/daemon/caps
+github.com/docker/docker/pkg/random
+github.com/docker/docker/pkg/stdcopy
+github.com/docker/docker/pkg/stringutils
+github.com/docker/docker/pkg/tlsconfig
+# github.com/docker/go-connections v0.4.0
+## explicit
+github.com/docker/go-connections/nat
+github.com/docker/go-connections/sockets
+github.com/docker/go-connections/tlsconfig
+# github.com/docker/go-units v0.4.0
+## explicit
+github.com/docker/go-units
+# github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e
 github.com/golang/groupcache/lru
 # github.com/golang/protobuf v1.3.3
 ## explicit
@@ -36,8 +72,6 @@ github.com/google/go-cmp/cmp/internal/diff
 github.com/google/go-cmp/cmp/internal/flags
 github.com/google/go-cmp/cmp/internal/function
 github.com/google/go-cmp/cmp/internal/value
-# github.com/googleapis/gax-go v1.0.4-0.20191018151119-b443e5a67ec8
-## explicit
 # github.com/googleapis/gax-go/v2 v2.0.5
 github.com/googleapis/gax-go/v2
 # github.com/ianlancetaylor/demangle v0.0.0-20181102032728-5e5cf60278f6
@@ -48,6 +82,15 @@ github.com/ianlancetaylor/demangle
 github.com/jstemmer/go-junit-report
 github.com/jstemmer/go-junit-report/formatter
 github.com/jstemmer/go-junit-report/parser
+# github.com/opencontainers/go-digest v1.0.0
+## explicit
+github.com/opencontainers/go-digest
+# github.com/pkg/errors v0.9.1
+## explicit
+github.com/pkg/errors
+# github.com/syndtr/gocapability v0.0.0-20180916011248-d98352740cb2
+## explicit
+github.com/syndtr/gocapability/capability
 # go.opencensus.io v0.22.3-0.20200113180412-d851005f548f
 ## explicit
 go.opencensus.io
@@ -67,11 +110,9 @@ go.opencensus.io/trace/internal
 go.opencensus.io/trace/propagation
 go.opencensus.io/trace/tracestate
 # golang.org/x/exp v0.0.0-20200119233911-0405dc783f0a
-## explicit
 golang.org/x/exp/apidiff
 golang.org/x/exp/cmd/apidiff
 # golang.org/x/lint v0.0.0-20191125180803-fdd1cda4f05f
-## explicit
 golang.org/x/lint
 golang.org/x/lint/golint
 # golang.org/x/net v0.0.0-20200114155413-6afb5195e5aa
@@ -82,7 +123,9 @@ golang.org/x/net/http/httpguts
 golang.org/x/net/http2
 golang.org/x/net/http2/hpack
 golang.org/x/net/idna
+golang.org/x/net/internal/socks
 golang.org/x/net/internal/timeseries
+golang.org/x/net/proxy
 golang.org/x/net/trace
 # golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d
 ## explicit
@@ -94,6 +137,7 @@ golang.org/x/oauth2/jwt
 # golang.org/x/sys v0.0.0-20200124204421-9fbb57f87de9
 ## explicit
 golang.org/x/sys/unix
+golang.org/x/sys/windows
 # golang.org/x/text v0.3.3-0.20191230102452-929e72ca90de
 ## explicit
 golang.org/x/text/secure/bidirule
@@ -154,7 +198,6 @@ google.golang.org/appengine/mail
 google.golang.org/appengine/urlfetch
 google.golang.org/appengine/user
 # google.golang.org/genproto v0.0.0-20200128133413-58ce757ed39b
-## explicit
 google.golang.org/genproto/googleapis/api/annotations
 google.golang.org/genproto/googleapis/iam/v1
 google.golang.org/genproto/googleapis/rpc/code

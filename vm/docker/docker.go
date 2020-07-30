@@ -347,6 +347,7 @@ func (inst *instance) Close() {
 
 //boot the VM by starting QEMU and waiting for SSH
 func (inst *instance) boot() error {
+	//added a CPU option here to enable nested virtualization on the L1 guest
 	inst.port = vmimpl.UnusedTCPPort()
 	args := []string{
 		"-m", strconv.Itoa(inst.cfg.Mem),
@@ -356,6 +357,7 @@ func (inst *instance) boot() error {
 		"-display", "none",
 		"-serial", "stdio",
 		"-no-reboot",
+		"-cpu", "host",
 	}
 	args = append(args, splitArgs(inst.cfg.QemuArgs, filepath.Join(inst.workdir, "template"))...)
 	if inst.image == "9p" {

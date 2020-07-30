@@ -573,6 +573,7 @@ func (mgr *Manager) runInstance(index int) (*Crash, error) {
 	}
 
 	rep := inst.MonitorExecution(outc, errc, mgr.reporter, vm.ExitTimeout)
+	log.Logf(1, "monitor execution returned an error")
 	if rep == nil {
 		// This is the only "OK" outcome.
 		log.Logf(0, "vm-%v: running for %v, restarting", index, time.Since(start))

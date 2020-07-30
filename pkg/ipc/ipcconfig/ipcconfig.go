@@ -38,7 +38,9 @@ func Default(target *prog.Target) (*ipc.Config, *ipc.ExecOpts, error) {
 	}
 	c.Flags |= sandboxFlags
 	sysTarget := targets.Get(target.OS, target.Arch)
-	c.UseShmem = sysTarget.ExecutorUsesShmem
+	// FIXME temp disabled all shmem
+	//c.UseShmem = sysTarget.ExecutorUsesShmem
+	c.UseShmem = false
 	c.UseForkServer = sysTarget.ExecutorUsesForkServer
 	opts := &ipc.ExecOpts{
 		Flags: ipc.FlagDedupCover,
