@@ -2,7 +2,6 @@
 // Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
 //this package piggybacks off the existing qemu VM impl to boot docker containers, but runs them on the host
-//for communitcation purposes, this has to also be run from a containter (since gvisor containers won't let you be on the host)
 package docker
 
 import (
@@ -21,8 +20,8 @@ import (
 )
 
 const (
-	//my laptop is 172.17.0.1
-	hostAddr = "172.17.0.2"
+	//localhost, since fuzzer will be on the same machine
+	hostAddr = "127.0.0.1"
 )
 
 func init() {
@@ -183,6 +182,12 @@ var archConfigs = map[string]*archConfig{
 		TargetDir: "/",
 		NicModel:  ",model=e1000",
 	},
+	"test/64": {
+		Qemu:      "",
+		QemuArgs:  "",
+		TargetDir: "",
+		NicModel:  "",
+	},
 }
 
 var linuxCmdline = []string{
@@ -287,12 +292,11 @@ func (inst *instance) Copy(hostSrc string) (string, error) {
 	if base == "syz-executor" {
 		//this is already on the docker image loaded in the VM, so it won't be necessary to copy it
 		//we need to specify the path inside the container though
-		return "/bin/linux_amd64/syz-executor", nil
+		return "/syz-executor", nil
 	}
 	if base == "syz-fuzzer" {
-		//this is the entrypoint of the docker container
-		//on the host, return the location of the bootstrap
-		return "/bin/linux_amd64/docker-bootstrap", nil
+		//now running fuzzer on the host
+		return hostSrc, nil
 	}
 	log.Logf(1, "'Copy' was called for something besides the executor or the fuzzer, so ignoring it")
 	return "", nil

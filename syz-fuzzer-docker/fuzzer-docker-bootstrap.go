@@ -1,46 +1,138 @@
 package main
-//
-//import (
-//	"encoding/json"
-//	"github.com/google/syzkaller/pkg/ipc"
-//	"github.com/google/syzkaller/pkg/log"
-//	"io/ioutil"
-//)
-//
-//const pathToInput = "/exec/input.json"
-//const pathToEnv = "/exec/env.json"
-//
-////entrypoint for container
-////check for a serialized env and input in some file that should be mounted as a volume
-////then call Exec
-//func main() {
-//
-//	//if len(os.Args)	< 2 {
-//	//	log.Fatalf("detected no arg for executor. Path to executor must be first command line arg")
-//	//}
-//	//executor := os.Args[1]
-//
-//	inputFile, err := ioutil.ReadFile(pathToInput)
-//	if err != nil {
-//		log.Fatalf("could not read inputfile: %v", err)
-//	}
-//	envFile, err := ioutil.ReadFile(pathToEnv)
-//	if err != nil {
-//		log.Fatalf("could not read envfile: %v", err)
-//	}
-//	env := ipc.Env{}
-//	if err = json.Unmarshal(envFile, &env); err != nil {
-//		log.Fatalf("could not unmarshal env: %v\n env json: %v", err, envFile)
-//	}
-//	input := ipc.ExecInput{}
-//	if err = json.Unmarshal(inputFile, &input); err != nil {
-//		log.Fatalf("could not unmarshal input: %v\ninput json: %v", err, inputFile)
-//	}
-//	output, info, hanged, err := env.Exec(input.Opts, input.P)
-//	result := ipc.ExecOutput{Output: output, Info: info, Hanged: hanged, Err0:err}
-//	resultJson, err := json.Marshal(result)
-//	if err != nil {
-//		log.Fatalf("could not marshal output: %v", err)
-//	}
-//	print(resultJson)
-//}
+
+import (
+	"bytes"
+	"flag"
+	"github.com/pkg/errors"
+	"io"
+	"log"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+	"unsafe"
+)
+
+type executeReq struct {
+	magic     uint64
+	envFlags  uint64 // env flags
+	execFlags uint64 // exec flags
+	pid       uint64
+	faultCall uint64
+	faultNth  uint64
+	progSize  uint64
+	// prog follows on pipe or in shmem
+}
+
+//use readall for consistency with IPC package
+func readExecRequest() (*executeReq, error) {
+	req := &executeReq{}
+	reqData := (*[unsafe.Sizeof(*req)]byte)(unsafe.Pointer(req))[:]
+	if _, err := io.ReadFull(os.Stdin, reqData); err != nil {
+		return nil, errors.Wrap(err, "Error reading executeRequest from stdin")
+	}
+	return req, nil
+}
+
+//use flags for 3 args:
+// !! these all return pointers
+func main() {
+	var count = flag.Int("count", 0, "how many time to rerun the program")
+	var stopTimestamp = flag.Int64("stop", 0, "loop the program until this unix timestamp")
+	var executor = flag.String("executor", "/syz-executor", "the executor binary")
+	var executorArgs = flag.String("executorArgs", "", "args for the executor")
+
+	log.Printf("%v", os.Args)
+	flag.Parse()
+	log.Printf("count: %d; stopTimestamp: %d; executor: %s; executorArgs: %s", *count, *stopTimestamp, *executor, *executorArgs)
+
+	log.SetPrefix("docker-bootstrap: ")
+
+	//read exec request from stdin
+	req, err := readExecRequest()
+	if err != nil {
+		log.Panicf("error determining length of program: %v", err)
+	}
+	log.Print("successfully read exec request")
+
+	//read program data
+	var progData = make([]byte, req.progSize)
+	n, err := io.ReadFull(os.Stdin, progData)
+	if err != nil || uint64(n) != req.progSize {
+		log.Panicf("error reading program data: expected %d bytes, read %d with error %v", req.progSize, n, err)
+	}
+	log.Printf("successfully read program data")
+
+	//run program and record output (overwriting on each successive run)
+	var out []byte
+	if *count != 0 {
+		for i := 0; i < *count; i++ {
+			out = execute(*executor, strings.Split(*executorArgs, " "), req, progData)
+		}
+	} else if *stopTimestamp != 0 {
+
+		ex := 0
+		stopTime := time.Unix(*stopTimestamp, 0)
+		log.Printf("looping until %s", stopTime.String())
+		if stopTime.Before(time.Now()) {
+			log.Panicf("stop timestamp %d should be in the future!", *stopTimestamp)
+		}
+
+		dur := time.Until(stopTime)
+		for stay, timeout := true, time.After(dur); stay; {
+			select {
+			case <-timeout:
+				stay = false
+			default:
+				ex++
+				out = execute(*executor, strings.Split(*executorArgs, " "), req, progData)
+			}
+		}
+		log.Printf("Total number of program executions: %d", ex)
+
+	} else {
+		log.Panicf("Neither -count nor -stop provided, exiting!")
+	}
+
+	_, err = os.Stdout.Write(out)
+	if err != nil {
+		log.Panicf("Could not write final program stdout to os.stdout")
+	}
+}
+
+func execute(executor string, executorArgs []string, req *executeReq, progData []byte) []byte {
+
+	//for now I'm using a pipe, could look into shmem in the future
+	read, write, err := os.Pipe()
+	if err != nil {
+		log.Panicf("could not create pipe, %v", err)
+	}
+
+	var stdout = bytes.Buffer{}
+	cmd := exec.Command(executor, executorArgs[:]...)
+	cmd.Stdin = read
+	cmd.Stdout = &stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		log.Panicf("Could not start command: %v", err)
+	}
+
+	//the following is mostly cloned from ipc's exec
+	//write request
+	reqData := (*[unsafe.Sizeof(*req)]byte)(unsafe.Pointer(req))[:]
+	if _, err := write.Write(reqData); err != nil {
+		log.Panicf("failed to write request to control pipe: %v", err)
+	}
+
+	//write prog data
+	if progData != nil {
+		if _, err := write.Write(progData); err != nil {
+			log.Panicf("failed to write program to control pipe: %v", err)
+		}
+	}
+
+	//wait for command to finish
+	_ = cmd.Wait()
+
+	return stdout.Bytes()
+}

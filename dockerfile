@@ -1,9 +1,8 @@
 from debian:9
 
-COPY linux_amd64/ /bin/linux_amd64/
-COPY syz-manager .
-COPY configs/ configs/
+COPY test_64/docker-bootstrap /docker-bootstrap
+COPY test_64/syz-executor /syz-executor
 
 # pass along all args from command line
-ENTRYPOINT ["/bin/linux_amd64/syz-fuzzer"]
+ENTRYPOINT ["/docker-bootstrap"]
 

@@ -159,6 +159,7 @@ func MakeEnv(config *Config, pid int) (*Env, error) {
 	var inf, outf *os.File
 	var inmem, outmem []byte
 	if config.UseShmem {
+		log.Logf(3, "Shared memory should not be active!")
 		var err error
 		inf, inmem, err = osutil.CreateMemMappedFile(prog.ExecBufferSize)
 		if err != nil {
@@ -249,6 +250,7 @@ var rateLimit = time.NewTicker(1 * time.Second)
 // info: per-call info
 // hanged: program hanged and was killed
 // err0: failed to start the process or bug in executor itself
+// TODO modify this to spawn the executor in a container and read the results
 func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInfo, hanged bool, err0 error) {
 	// Copy-in serialized program.
 	progSize, err := p.SerializeForExec(env.in)
@@ -275,7 +277,10 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInf
 		}
 		tmpDirPath := "./"
 		atomic.AddUint64(&env.StatRestarts, 1)
-		env.cmd, err0 = makeCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath)
+		//FIXME changed to makeContainerCommand
+		env.cmd, err0 = makeContainerCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath)
+		//env.cmd, err0 = makeCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath)
+
 		if err0 != nil {
 			log.Logf(1, "error creating command: %v", err0)
 			return
@@ -288,6 +293,68 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInf
 		env.cmd = nil
 		return
 	}
+
+	info, err0 = env.parseOutput(p)
+	if err0 != nil {
+		log.Logf(1, "Error parsing output: %v", err0)
+	}
+	if info != nil && env.config.Flags&FlagSignal == 0 {
+		addFallbackSignal(p, info)
+	}
+	if !env.config.UseForkServer {
+		env.cmd.close()
+		env.cmd = nil
+	}
+	return
+}
+
+func (env *Env) ExecContainer(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInfo, hanged bool, err0 error) {
+	// Copy-in serialized program.
+	progSize, err := p.SerializeForExec(env.in)
+	if err != nil {
+		err0 = fmt.Errorf("failed to serialize: %v", err)
+		return
+	}
+	//can't use shmem
+	var progData = env.in[:progSize]
+
+	// Zero out the first two words (ncmd and nsig), so that we don't have garbage there
+	// if executor crashes before writing non-garbage there.
+	for i := 0; i < 4; i++ {
+		env.out[i] = 0
+	}
+
+	atomic.AddUint64(&env.StatExecs, 1)
+	if env.cmd == nil {
+		tmpDirPath := "./"
+		atomic.AddUint64(&env.StatRestarts, 1)
+		//make a command in a container
+		env.cmd, err0 = makeContainerCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath)
+	}
+	total0, idle0, err := getCPUUsage()
+	if err != nil {
+		err0 = fmt.Errorf("failed to read pre CPU usage: %v", err)
+		return
+	}
+	output, hanged, err0 = env.cmd.exec(opts, progData)
+	if err0 != nil {
+		log.Logf(1, "cmd exec failed")
+		env.cmd.close()
+		env.cmd = nil
+		return
+	}
+	total1, idle1, err := getCPUUsage()
+	if err != nil {
+		err0 = fmt.Errorf("failed to read post CPU usage: %v", err)
+		return
+	}
+
+	//TODO do some work here to configure a fallback signal
+	idleTicks := float64(idle1 - idle0)
+	totalTicks := float64(total1 - total0)
+
+	cpuUsage := 100 * (totalTicks - idleTicks) / totalTicks
+	log.Logf(3, "CPU usage during program execution was %f%% [busy: %f, total: %f]\n", cpuUsage, totalTicks-idleTicks, totalTicks)
 
 	info, err0 = env.parseOutput(p)
 	if err0 != nil {
@@ -718,6 +785,7 @@ func (c *command) wait() error {
 	return err
 }
 
+//TODO this can be simplified to not read any results
 func (c *command) exec(opts *ExecOpts, progData []byte) (output []byte, hanged bool, err0 error) {
 	req := &executeReq{
 		magic:     inMagic,

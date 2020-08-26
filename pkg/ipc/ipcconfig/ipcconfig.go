@@ -38,8 +38,8 @@ func Default(target *prog.Target) (*ipc.Config, *ipc.ExecOpts, error) {
 	}
 	c.Flags |= sandboxFlags
 	sysTarget := targets.Get(target.OS, target.Arch)
-	// FIXME temp disabled all shmem
-	//c.UseShmem = sysTarget.ExecutorUsesShmem
+	//FIXME can disable all shmem here
+	c.UseShmem = sysTarget.ExecutorUsesShmem
 	c.UseShmem = false
 	c.UseForkServer = sysTarget.ExecutorUsesForkServer
 	opts := &ipc.ExecOpts{
