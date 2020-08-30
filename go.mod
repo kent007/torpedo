@@ -1,6 +1,6 @@
 module github.com/google/syzkaller
 
-go 1.14
+go 1.13
 
 require (
 	cloud.google.com/go v0.52.1-0.20200128230113-ad7cd32b39df // indirect
@@ -10,6 +10,7 @@ require (
 	github.com/google/go-cmp v0.4.0
 	github.com/ianlancetaylor/demangle v0.0.0-20181102032728-5e5cf60278f6
 	github.com/jstemmer/go-junit-report v0.9.2-0.20191008195320-984a47ca6b0a // indirect
+	github.com/olekukonko/tablewriter v0.0.4
 	github.com/pkg/errors v0.9.1
 	go.opencensus.io v0.22.3-0.20200113180412-d851005f548f // indirect
 	golang.org/x/net v0.0.0-20200114155413-6afb5195e5aa

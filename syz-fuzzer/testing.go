@@ -241,9 +241,10 @@ func checkRevisions(args *checkArgs) error {
 	return nil
 }
 
+//FIXME modified this function heavily for testing purposes
 func checkSimpleProgram(args *checkArgs, features *host.Features) error {
 	log.Logf(0, "testing simple program...")
-	//FIXME commented out host setup, since this is useless in a containerized environment
+	//commented out host setup, since this is useless in a containerized environment
 	//if err := host.Setup(args.target, features, args.featureFlags, args.ipcConfig.Executor); err != nil {
 	//	return fmt.Errorf("host setup failed: %v", err)
 	//}
@@ -253,8 +254,20 @@ func checkSimpleProgram(args *checkArgs, features *host.Features) error {
 	}
 	defer env.Close()
 	p := args.target.DataMmapProg()
-	//FIXME using container test here
-	output, info, hanged, err := env.ExecContainer(args.ipcExecOpts, p)
+	//using container test here
+
+	beforeReport, err := ipc.GetCPUReport()
+	if err != nil {
+		return fmt.Errorf("failed to read pre CPU usage: %v", err)
+	}
+	output, info, hanged, err := env.ExecContainer(args.ipcExecOpts, p, 0)
+	afterReport, err := ipc.GetCPUReport()
+	if err != nil {
+		return fmt.Errorf("failed to read post CPU usage: %v", err)
+	}
+
+	ipc.DisplayCPUUsage(beforeReport, afterReport)
+
 	if err != nil {
 		return fmt.Errorf("program execution failed: %v\n%s", err, output)
 	}

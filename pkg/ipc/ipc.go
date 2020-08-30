@@ -278,7 +278,7 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInf
 		tmpDirPath := "./"
 		atomic.AddUint64(&env.StatRestarts, 1)
 		//FIXME changed to makeContainerCommand
-		env.cmd, err0 = makeContainerCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath)
+		env.cmd, err0 = makeContainerCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath, 0)
 		//env.cmd, err0 = makeCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath)
 
 		if err0 != nil {
@@ -308,7 +308,7 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInf
 	return
 }
 
-func (env *Env) ExecContainer(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInfo, hanged bool, err0 error) {
+func (env *Env) ExecContainer(opts *ExecOpts, p *prog.Prog, core int) (output []byte, info *ProgInfo, hanged bool, err0 error) {
 	// Copy-in serialized program.
 	progSize, err := p.SerializeForExec(env.in)
 	if err != nil {
@@ -329,13 +329,9 @@ func (env *Env) ExecContainer(opts *ExecOpts, p *prog.Prog) (output []byte, info
 		tmpDirPath := "./"
 		atomic.AddUint64(&env.StatRestarts, 1)
 		//make a command in a container
-		env.cmd, err0 = makeContainerCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath)
+		env.cmd, err0 = makeContainerCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath, core)
 	}
-	total0, idle0, err := getCPUUsage()
-	if err != nil {
-		err0 = fmt.Errorf("failed to read pre CPU usage: %v", err)
-		return
-	}
+
 	output, hanged, err0 = env.cmd.exec(opts, progData)
 	if err0 != nil {
 		log.Logf(1, "cmd exec failed")
@@ -343,19 +339,8 @@ func (env *Env) ExecContainer(opts *ExecOpts, p *prog.Prog) (output []byte, info
 		env.cmd = nil
 		return
 	}
-	total1, idle1, err := getCPUUsage()
-	if err != nil {
-		err0 = fmt.Errorf("failed to read post CPU usage: %v", err)
-		return
-	}
 
-	//TODO do some work here to configure a fallback signal
-	idleTicks := float64(idle1 - idle0)
-	totalTicks := float64(total1 - total0)
-
-	cpuUsage := 100 * (totalTicks - idleTicks) / totalTicks
-	log.Logf(3, "CPU usage during program execution was %f%% [busy: %f, total: %f]\n", cpuUsage, totalTicks-idleTicks, totalTicks)
-
+	//TODO look at possibly configuring a different fallback signal
 	info, err0 = env.parseOutput(p)
 	if err0 != nil {
 		log.Logf(1, "Error parsing output: %v", err0)
