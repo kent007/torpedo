@@ -197,11 +197,12 @@ func checkCalls(args *checkArgs, features *host.Features) (*rpctype.CheckArgs, e
 	return res, nil
 }
 
+//FIXME using executor direct command here
 func checkRevisions(args *checkArgs) error {
 	log.Logf(0, "checking revisions...")
 	executorArgs := strings.Split(args.ipcConfig.Executor, " ")
 	executorArgs = append(executorArgs, "version")
-	cmd := osutil.Command(executorArgs[0], executorArgs[1:]...)
+	cmd := ipc.MakeExecutorCommand(executorArgs)
 	cmd.Stderr = ioutil.Discard
 	if _, err := cmd.StdinPipe(); err != nil { // for the case executor is wrapped with ssh
 		return err
@@ -218,6 +219,10 @@ func checkRevisions(args *checkArgs) error {
 		return fmt.Errorf("mismatching target/executor arches: %v vs %v", args.target.Arch, vers[1])
 	}
 	if prog.GitRevision != vers[3] {
+		if prog.GitRevision == "" {
+			log.Logf(1, "prog has no git revision, assume this is built for debugging purposes")
+			return nil
+		}
 		return fmt.Errorf("mismatching fuzzer/executor git revisions: %v vs %v",
 			prog.GitRevision, vers[3])
 	}
@@ -236,18 +241,33 @@ func checkRevisions(args *checkArgs) error {
 	return nil
 }
 
+//FIXME modified this function heavily for testing purposes
 func checkSimpleProgram(args *checkArgs, features *host.Features) error {
 	log.Logf(0, "testing simple program...")
-	if err := host.Setup(args.target, features, args.featureFlags, args.ipcConfig.Executor); err != nil {
-		return fmt.Errorf("host setup failed: %v", err)
-	}
+	//commented out host setup, since this is useless in a containerized environment
+	//if err := host.Setup(args.target, features, args.featureFlags, args.ipcConfig.Executor); err != nil {
+	//	return fmt.Errorf("host setup failed: %v", err)
+	//}
 	env, err := ipc.MakeEnv(args.ipcConfig, 0)
 	if err != nil {
 		return fmt.Errorf("failed to create ipc env: %v", err)
 	}
 	defer env.Close()
 	p := args.target.DataMmapProg()
-	output, info, hanged, err := env.Exec(args.ipcExecOpts, p)
+	//using container test here
+
+	beforeReport, err := ipc.GetCPUReport()
+	if err != nil {
+		return fmt.Errorf("failed to read pre CPU usage: %v", err)
+	}
+	output, info, hanged, err := env.ExecContainer(args.ipcExecOpts, p, 0)
+	afterReport, err := ipc.GetCPUReport()
+	if err != nil {
+		return fmt.Errorf("failed to read post CPU usage: %v", err)
+	}
+
+	ipc.DisplayCPUUsage(beforeReport, afterReport)
+
 	if err != nil {
 		return fmt.Errorf("program execution failed: %v\n%s", err, output)
 	}

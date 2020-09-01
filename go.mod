@@ -1,22 +1,17 @@
 module github.com/google/syzkaller
 
-go 1.14
+go 1.13
 
 require (
 	cloud.google.com/go v0.52.1-0.20200128230113-ad7cd32b39df // indirect
 	cloud.google.com/go/storage v1.0.0
-	github.com/Microsoft/go-winio v0.4.14 // indirect
-	github.com/docker/distribution v2.7.1+incompatible // indirect
-	github.com/docker/docker v1.13.1
-	github.com/docker/go-connections v0.4.0 // indirect
-	github.com/docker/go-units v0.4.0 // indirect
+	github.com/c9s/goprocinfo v0.0.0-20200311234719-5750cbd54a3b
 	github.com/golang/protobuf v1.3.3 // indirect
 	github.com/google/go-cmp v0.4.0
 	github.com/ianlancetaylor/demangle v0.0.0-20181102032728-5e5cf60278f6
 	github.com/jstemmer/go-junit-report v0.9.2-0.20191008195320-984a47ca6b0a // indirect
-	github.com/opencontainers/go-digest v1.0.0 // indirect
-	github.com/pkg/errors v0.9.1 // indirect
-	github.com/syndtr/gocapability v0.0.0-20180916011248-d98352740cb2 // indirect
+	github.com/olekukonko/tablewriter v0.0.4
+	github.com/pkg/errors v0.9.1
 	go.opencensus.io v0.22.3-0.20200113180412-d851005f548f // indirect
 	golang.org/x/net v0.0.0-20200114155413-6afb5195e5aa
 	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d
