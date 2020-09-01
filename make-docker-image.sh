@@ -1,3 +1,3 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-docker build -f dockerfile -t syzkaller-image bin/
+docker build --build-arg OS=$1 --build-arg ARCH=$2 -f Dockerfile -t syzkaller-image bin/

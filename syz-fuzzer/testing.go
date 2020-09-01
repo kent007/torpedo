@@ -148,7 +148,10 @@ func checkMachine(args *checkArgs) (*rpctype.CheckArgs, error) {
 		args.ipcConfig.Flags&ipc.FlagSandboxAndroid != 0 {
 		return nil, fmt.Errorf("sandbox=android is not supported (%v)", feat.Reason)
 	}
-	if err := checkSimpleProgram(args, features); err != nil {
+	//if err := checkSimpleProgram(args, features); err != nil {
+	//	return nil, err
+	//}
+	if err := checkSimpleContainerProgram(args); err != nil {
 		return nil, err
 	}
 	log.Logf(1, "no problem checking simple program")
@@ -254,18 +257,53 @@ func checkSimpleProgram(args *checkArgs, features *host.Features) error {
 	}
 	defer env.Close()
 	p := args.target.DataMmapProg()
-	//using container test here
+	output, info, hanged, err := env.Exec(args.ipcExecOpts, p)
+	if err != nil {
+		return fmt.Errorf("program execution failed: %v\n%s", err, output)
+	}
+	if hanged {
+		return fmt.Errorf("program hanged:\n%s", output)
+	}
+	if len(info.Calls) == 0 {
+		return fmt.Errorf("no calls executed:\n%s", output)
+	}
+	if info.Calls[0].Errno != 0 {
+		return fmt.Errorf("simple call failed: %+v\n%s", info.Calls[0], output)
+	}
+	if args.ipcConfig.Flags&ipc.FlagSignal != 0 && len(info.Calls[0].Signal) < 2 {
+		return fmt.Errorf("got no coverage:\n%s", output)
+	}
+	if len(info.Calls[0].Signal) < 1 {
+		return fmt.Errorf("got no fallback coverage:\n%s", output)
+	}
+	return nil
+}
+
+func checkSimpleContainerProgram(args *checkArgs) error {
+	log.Logf(0, "testing simple program in container...")
+	env, err := ipc.MakeEnv(args.ipcConfig, 0)
+	if err != nil {
+		return fmt.Errorf("failed to create ipc env: %v", err)
+	}
+	defer env.Close()
+	p := args.target.DataMmapProg()
 
 	beforeReport, err := ipc.GetCPUReport()
 	if err != nil {
 		return fmt.Errorf("failed to read pre CPU usage: %v", err)
 	}
-	output, info, hanged, err := env.ExecContainer(args.ipcExecOpts, p, 0)
+	r := &ipc.ContainerRestrictions{
+		Cores: "0",
+		Usage: 0.5,
+	}
+	output, info, hanged, err := env.ExecOnCore(args.ipcExecOpts, p, r)
 	afterReport, err := ipc.GetCPUReport()
 	if err != nil {
 		return fmt.Errorf("failed to read post CPU usage: %v", err)
 	}
 
+	usage, _ := ipc.GetUsageOfCore(beforeReport, afterReport, 0)
+	log.Logf(3, "CPU usage of core 0 was: %0.2f", usage)
 	ipc.DisplayCPUUsage(beforeReport, afterReport)
 
 	if err != nil {

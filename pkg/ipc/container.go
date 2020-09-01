@@ -33,12 +33,17 @@ func MakeExecutorCommand(bin []string) *exec.Cmd {
 	return osutil.Command("docker", dockerArgs...)
 }
 
-func MakeBootstrapCommand(bin []string, count int, stopTimestamp int64, core int) (*exec.Cmd, error) {
+func MakeBootstrapCommand(bin []string, count int, stopTimestamp int64, cores string, usage float32) (*exec.Cmd, error) {
 	dockerArgs := strings.Split(dockerArgString, " ")
 
 	//add core restriction
-	if core > -1 {
-		dockerArgs = append(dockerArgs, fmt.Sprintf("--cpuset-cpus=%d", core))
+	if cores != "" {
+		dockerArgs = append(dockerArgs, fmt.Sprintf("--cpuset-cpus=%s", cores))
+	}
+
+	//add usage restriction
+	if usage > 0 {
+		dockerArgs = append(dockerArgs, fmt.Sprintf("--cpus=%f", usage))
 	}
 
 	//add image
@@ -62,10 +67,15 @@ func MakeBootstrapCommand(bin []string, count int, stopTimestamp int64, core int
 	return osutil.Command("docker", dockerArgs...), nil
 }
 
+type ContainerRestrictions struct {
+	Cores string
+	Usage float32
+}
+
 // wraps the standard executor command in a docker command line
 // this can only be called from a fuzzer that is _not_ running in a container, or at least has access to the docker CLI
 func makeContainerCommand(pid int, bin []string, config *Config, inFile, outFile *os.File, outmem []byte,
-	tmpDirPath string, core int) (*command, error) {
+	tmpDirPath string, r ContainerRestrictions) (*command, error) {
 
 	if inFile != nil || outFile != nil {
 		return nil, errors.New("containerized commands do not support passing additional file descriptors")
@@ -113,7 +123,7 @@ func makeContainerCommand(pid int, bin []string, config *Config, inFile, outFile
 	c.readDone = make(chan []byte, 1)
 	c.exited = make(chan struct{})
 
-	cmd, err := MakeBootstrapCommand(bin, 0, stopTimestamp, core)
+	cmd, err := MakeBootstrapCommand(bin, 0, stopTimestamp, r.Cores, r.Usage)
 	if err != nil {
 		return nil, fmt.Errorf("could not make bootstrap command: %v", err)
 	}
@@ -245,4 +255,15 @@ func DisplayCPUUsage(before *CPUReport, after *CPUReport) error {
 	table.SetFooter(convertToString(*diff, total))
 	table.Render()
 	return nil
+}
+
+func GetUsageOfCore(before *CPUReport, after *CPUReport, core int) (float64, error) {
+	if core < 0 || core > len(before.cpus) {
+		return 0, fmt.Errorf("core %d does not exist", core)
+	}
+	report, total, err := measureCore(before.cpus[core], after.cpus[core])
+	if err != nil {
+		return 0, err
+	}
+	return 100 * float64(total-report.Idle) / float64(total), nil
 }

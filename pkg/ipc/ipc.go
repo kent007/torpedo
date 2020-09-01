@@ -22,7 +22,6 @@ import (
 	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/google/syzkaller/pkg/signal"
 	"github.com/google/syzkaller/prog"
-	"github.com/google/syzkaller/sys/targets"
 )
 
 // Configuration flags for Config.Flags.
@@ -250,65 +249,16 @@ var rateLimit = time.NewTicker(1 * time.Second)
 // info: per-call info
 // hanged: program hanged and was killed
 // err0: failed to start the process or bug in executor itself
-// TODO modify this to spawn the executor in a container and read the results
+// FIXME always spawns on core 0 with 100% utilization
 func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInfo, hanged bool, err0 error) {
-	// Copy-in serialized program.
-	progSize, err := p.SerializeForExec(env.in)
-	if err != nil {
-		err0 = fmt.Errorf("failed to serialize: %v", err)
-		return
+	r := &ContainerRestrictions{
+		Cores: "",
+		Usage: 1.0,
 	}
-	var progData []byte
-	if !env.config.UseShmem {
-		progData = env.in[:progSize]
-	}
-	// Zero out the first two words (ncmd and nsig), so that we don't have garbage there
-	// if executor crashes before writing non-garbage there.
-	for i := 0; i < 4; i++ {
-		env.out[i] = 0
-	}
-
-	atomic.AddUint64(&env.StatExecs, 1)
-	if env.cmd == nil {
-		if p.Target.OS != "test" && targets.Get(p.Target.OS, p.Target.Arch).HostFuzzer {
-			// The executor is actually ssh,
-			// starting them too frequently leads to timeouts.
-			<-rateLimit.C
-		}
-		tmpDirPath := "./"
-		atomic.AddUint64(&env.StatRestarts, 1)
-		//FIXME changed to makeContainerCommand
-		env.cmd, err0 = makeContainerCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath, 0)
-		//env.cmd, err0 = makeCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath)
-
-		if err0 != nil {
-			log.Logf(1, "error creating command: %v", err0)
-			return
-		}
-	}
-	output, hanged, err0 = env.cmd.exec(opts, progData)
-	if err0 != nil {
-		log.Logf(1, "cmd exec failed")
-		env.cmd.close()
-		env.cmd = nil
-		return
-	}
-
-	info, err0 = env.parseOutput(p)
-	if err0 != nil {
-		log.Logf(1, "Error parsing output: %v", err0)
-	}
-	if info != nil && env.config.Flags&FlagSignal == 0 {
-		addFallbackSignal(p, info)
-	}
-	if !env.config.UseForkServer {
-		env.cmd.close()
-		env.cmd = nil
-	}
-	return
+	return env.ExecOnCore(opts, p, r)
 }
 
-func (env *Env) ExecContainer(opts *ExecOpts, p *prog.Prog, core int) (output []byte, info *ProgInfo, hanged bool, err0 error) {
+func (env *Env) ExecOnCore(opts *ExecOpts, p *prog.Prog, r *ContainerRestrictions) (output []byte, info *ProgInfo, hanged bool, err0 error) {
 	// Copy-in serialized program.
 	progSize, err := p.SerializeForExec(env.in)
 	if err != nil {
@@ -329,7 +279,7 @@ func (env *Env) ExecContainer(opts *ExecOpts, p *prog.Prog, core int) (output []
 		tmpDirPath := "./"
 		atomic.AddUint64(&env.StatRestarts, 1)
 		//make a command in a container
-		env.cmd, err0 = makeContainerCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath, core)
+		env.cmd, err0 = makeContainerCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath, *r)
 	}
 
 	output, hanged, err0 = env.cmd.exec(opts, progData)
