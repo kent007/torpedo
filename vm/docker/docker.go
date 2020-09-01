@@ -1,7 +1,7 @@
 // Copyright 2015 syzkaller project authors. All rights reserved.
 // Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
-//this package piggybacks off the existing qemu VM impl to boot docker containers and run them on the VM
+//this package piggybacks off the existing qemu VM impl to boot docker containers, but runs them on the host
 package docker
 
 import (
@@ -10,11 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/google/syzkaller/pkg/config"
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/google/syzkaller/sys/targets"
@@ -22,7 +20,8 @@ import (
 )
 
 const (
-	hostAddr = "10.0.2.10"
+	//localhost, since fuzzer will be on the same machine
+	hostAddr = "127.0.0.1"
 )
 
 func init() {
@@ -183,6 +182,12 @@ var archConfigs = map[string]*archConfig{
 		TargetDir: "/",
 		NicModel:  ",model=e1000",
 	},
+	"test/64": {
+		Qemu:      "",
+		QemuArgs:  "",
+		TargetDir: "",
+		NicModel:  "",
+	},
 }
 
 var linuxCmdline = []string{
@@ -210,36 +215,12 @@ func ctor(env *vmimpl.Env) (vmimpl.Pool, error) {
 		QemuArgs:    archConfig.QemuArgs,
 		Snapshot:    true,
 	}
-	if err := config.LoadData(env.Config, cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse qemu vm config: %v", err)
-	}
 	if cfg.Count < 1 || cfg.Count > 128 {
 		return nil, fmt.Errorf("invalid config param count: %v, want [1, 128]", cfg.Count)
 	}
 	if env.Debug && cfg.Count > 1 {
 		log.Logf(0, "limiting number of VMs from %v to 1 in debug mode", cfg.Count)
 		cfg.Count = 1
-	}
-	if _, err := exec.LookPath(cfg.Qemu); err != nil {
-		return nil, err
-	}
-	if env.Image == "9p" {
-		if env.OS != "linux" {
-			return nil, fmt.Errorf("9p image is supported for linux only")
-		}
-		if cfg.Kernel == "" {
-			return nil, fmt.Errorf("9p image requires kernel")
-		}
-	} else {
-		if !osutil.IsExist(env.Image) {
-			return nil, fmt.Errorf("image file '%v' does not exist", env.Image)
-		}
-	}
-	if cfg.CPU <= 0 || cfg.CPU > 1024 {
-		return nil, fmt.Errorf("bad qemu cpu: %v, want [1-1024]", cfg.CPU)
-	}
-	if cfg.Mem < 128 || cfg.Mem > 1048576 {
-		return nil, fmt.Errorf("bad qemu mem: %v, want [128-1048576]", cfg.Mem)
 	}
 	cfg.Kernel = osutil.Abs(cfg.Kernel)
 	cfg.Initrd = osutil.Abs(cfg.Initrd)
@@ -258,36 +239,13 @@ func (pool *Pool) Count() int {
 
 //create a new pool
 func (pool *Pool) Create(workdir string, index int) (vmimpl.Instance, error) {
-	sshkey := pool.env.SSHKey
-	sshuser := pool.env.SSHUser
-	if pool.env.Image == "9p" {
-		sshkey = filepath.Join(workdir, "key")
-		sshuser = "root"
-		if _, err := osutil.RunCmd(10*time.Minute, "", "ssh-keygen", "-t", "rsa", "-b", "2048",
-			"-N", "", "-C", "", "-f", sshkey); err != nil {
-			return nil, err
-		}
-		initFile := filepath.Join(workdir, "init.sh")
-		if err := osutil.WriteExecFile(initFile, []byte(strings.Replace(initScript, "{{KEY}}", sshkey, -1))); err != nil {
-			return nil, fmt.Errorf("failed to create init file: %v", err)
-		}
-	}
-
-	for i := 0; ; i++ {
-		inst, err := pool.ctor(workdir, sshkey, sshuser, index)
-		if err == nil {
-			return inst, nil
-		}
-		// Older qemu prints "could", newer -- "Could".
-		if i < 1000 && strings.Contains(err.Error(), "ould not set up host forwarding rule") {
-			continue
-		}
-		return nil, err
-	}
+	inst, err := pool.ctor(workdir, "", "", index)
+	return inst, err
 }
 
 //constructor for the VM
 //calls boot, which brings up the VM and forwards ssh
+//for this instance, we don't need a VM, so it really goes away
 func (pool *Pool) ctor(workdir, sshkey, sshuser string, index int) (vmimpl.Instance, error) {
 	inst := &instance{
 		cfg:        pool.cfg,
@@ -301,169 +259,23 @@ func (pool *Pool) ctor(workdir, sshkey, sshuser string, index int) (vmimpl.Insta
 		sshuser:    sshuser,
 		diagnose:   make(chan bool, 1),
 	}
-	if st, err := os.Stat(inst.image); err != nil && st.Size() == 0 {
-		// Some kernels may not need an image, however caller may still
-		// want to pass us a fake empty image because the rest of syzkaller
-		// assumes that an image is mandatory. So if the image is empty, we ignore it.
-		inst.image = ""
-	}
-	closeInst := inst
-	defer func() {
-		if closeInst != nil {
-			closeInst.Close()
-		}
-	}()
-
-	var err error
-	inst.rpipe, inst.wpipe, err = osutil.LongPipe()
-	if err != nil {
-		return nil, err
-	}
-	//call boot
-	log.Logf(0, "calling boot")
-	if err := inst.boot(); err != nil {
-		return nil, err
-	}
-
-	closeInst = nil
-	return inst, nil
-}
-
-func (inst *instance) Close() {
-	if inst.qemu != nil {
-		inst.qemu.Process.Kill()
-		inst.qemu.Wait()
-	}
-	if inst.merger != nil {
-		inst.merger.Wait()
-	}
-	if inst.rpipe != nil {
-		inst.rpipe.Close()
-	}
-	if inst.wpipe != nil {
-		inst.wpipe.Close()
-	}
-}
-
-//boot the VM by starting QEMU and waiting for SSH
-func (inst *instance) boot() error {
-	//added a CPU option here to enable nested virtualization on the L1 guest
-	inst.port = vmimpl.UnusedTCPPort()
-	args := []string{
-		"-m", strconv.Itoa(inst.cfg.Mem),
-		"-smp", strconv.Itoa(inst.cfg.CPU),
-		"-net", "nic" + inst.archConfig.NicModel,
-		"-net", fmt.Sprintf("user,host=%v,hostfwd=tcp::%v-:22", hostAddr, inst.port),
-		"-display", "none",
-		"-serial", "stdio",
-		"-no-reboot",
-		"-cpu", "host",
-	}
-	args = append(args, splitArgs(inst.cfg.QemuArgs, filepath.Join(inst.workdir, "template"))...)
-	if inst.image == "9p" {
-		args = append(args,
-			"-fsdev", "local,id=fsdev0,path=/,security_model=none,readonly",
-			"-device", "virtio-9p-pci,fsdev=fsdev0,mount_tag=/dev/root",
-		)
-	} else if inst.image != "" {
-		// inst.cfg.ImageDevice can contain spaces
-		imgline := strings.Split(inst.cfg.ImageDevice, " ")
-		imgline[0] = "-" + imgline[0]
-		if strings.HasSuffix(imgline[len(imgline)-1], "file=") {
-			imgline[len(imgline)-1] = imgline[len(imgline)-1] + inst.image
-		} else {
-			imgline = append(imgline, inst.image)
-		}
-		args = append(args, imgline...)
-		if inst.cfg.Snapshot {
-			args = append(args, "-snapshot")
-		}
-	}
-	if inst.cfg.Initrd != "" {
-		args = append(args,
-			"-initrd", inst.cfg.Initrd,
-		)
-	}
-	if inst.cfg.Kernel != "" {
-		cmdline := append([]string{}, inst.archConfig.CmdLine...)
-		if inst.image == "9p" {
-			cmdline = append(cmdline,
-				"root=/dev/root",
-				"rootfstype=9p",
-				"rootflags=trans=virtio,version=9p2000.L,cache=loose",
-				"init="+filepath.Join(inst.workdir, "init.sh"),
-			)
-		}
-		cmdline = append(cmdline, inst.cfg.Cmdline)
-		args = append(args,
-			"-kernel", inst.cfg.Kernel,
-			"-append", strings.Join(cmdline, " "),
-		)
-	}
-	if inst.debug {
-		log.Logf(0, "running command: %v %#v", inst.cfg.Qemu, args)
-	}
-	qemu := osutil.Command(inst.cfg.Qemu, args...)
-	qemu.Stdout = inst.wpipe
-	qemu.Stderr = inst.wpipe
-	if err := qemu.Start(); err != nil {
-		return fmt.Errorf("failed to start %v %+v: %v", inst.cfg.Qemu, args, err)
-	}
-	inst.wpipe.Close()
-	inst.wpipe = nil
-	inst.qemu = qemu
-	// Qemu has started.
-
-	// Start output merger.
+	//put the outputmerger in here, migrated from boot
 	var tee io.Writer
 	if inst.debug {
 		tee = os.Stdout
 	}
 	inst.merger = vmimpl.NewOutputMerger(tee)
-	inst.merger.Add("qemu", inst.rpipe)
-	inst.rpipe = nil
-
-	var bootOutput []byte
-	bootOutputStop := make(chan bool)
-	go func() {
-		for {
-			select {
-			case out := <-inst.merger.Output:
-				bootOutput = append(bootOutput, out...)
-			case <-bootOutputStop:
-				close(bootOutputStop)
-				return
-			}
-		}
-	}()
-	if err := vmimpl.WaitForSSH(inst.debug, 10*time.Minute, "localhost",
-		inst.sshkey, inst.sshuser, inst.os, inst.port, inst.merger.Err); err != nil {
-		bootOutputStop <- true
-		<-bootOutputStop
-		log.Logf(0, fmt.Sprintf("WaitforSSH returned with err %v", err))
-		return vmimpl.MakeBootError(err, bootOutput)
-	}
-	log.Logf(0, "finished waiting for ssh without an error")
-	bootOutputStop <- true
-	return nil
+	return inst, nil
 }
 
-func splitArgs(str, template string) (args []string) {
-	for _, arg := range strings.Split(str, " ") {
-		if arg == "" {
-			continue
-		}
-		args = append(args, strings.Replace(arg, "{{TEMPLATE}}", template, -1))
-	}
-	return
+func (inst *instance) Close() {
+	log.Logf(1, "no VM was started, Close does nothing")
 }
 
+//need to return the address of the manager's container inside the docker bridge network
+//this allows the manager to chat with the containers created by the bootstrap
 func (inst *instance) Forward(port int) (string, error) {
-	addr := hostAddr
-	if inst.target.HostFuzzer {
-		addr = "127.0.0.1"
-	}
-	return fmt.Sprintf("%v:%v", addr, port), nil
+	return fmt.Sprintf("%v:%v", hostAddr, port), nil
 }
 
 func (inst *instance) targetDir() string {
@@ -476,40 +288,22 @@ func (inst *instance) targetDir() string {
 //copy a file from the host to the VM
 func (inst *instance) Copy(hostSrc string) (string, error) {
 	base := filepath.Base(hostSrc)
-	vmDst := filepath.Join(inst.targetDir(), base)
-	if inst.target.HostFuzzer {
-		if base == "syz-fuzzer" || base == "syz-execprog" {
-			return hostSrc, nil // we will run these on host
-		}
-		if inst.files == nil {
-			inst.files = make(map[string]string)
-		}
-		inst.files[vmDst] = hostSrc
-	}
+	//vmDst := filepath.Join(inst.targetDir(), base)
 	if base == "syz-executor" {
 		//this is already on the docker image loaded in the VM, so it won't be necessary to copy it
 		//we need to specify the path inside the container though
 		return "/syz-executor", nil
 	}
 	if base == "syz-fuzzer" {
-		//this is the entrypoint of the docker container
-		//we need to copy the bootstrap instead
-		hostSrc = "bin/linux_amd64/docker-bootstrap"
-		vmDst = filepath.Join(inst.targetDir(), "docker-bootstrap")
+		//now running fuzzer on the host
+		return hostSrc, nil
 	}
-
-	args := append(vmimpl.SCPArgs(inst.debug, inst.sshkey, inst.port),
-		hostSrc, inst.sshuser+"@localhost:"+vmDst)
-	if inst.debug {
-		log.Logf(0, "running command: scp %#v", args)
-	}
-	_, err := osutil.RunCmd(3*time.Minute, "", "scp", args...)
-	if err != nil {
-		return "", err
-	}
-	return vmDst, nil
+	log.Logf(1, "'Copy' was called for something besides the executor or the fuzzer, so ignoring it")
+	return "", nil
 }
 
+//run actually runs the command, normally through ssh
+//on the host, no SSH is necessary
 func (inst *instance) Run(timeout time.Duration, stop <-chan bool, command string) (
 	<-chan []byte, <-chan error, error) {
 	rpipe, wpipe, err := osutil.LongPipe()
@@ -517,28 +311,7 @@ func (inst *instance) Run(timeout time.Duration, stop <-chan bool, command strin
 		return nil, nil, err
 	}
 	inst.merger.Add("ssh", rpipe)
-
-	sshArgs := vmimpl.SSHArgs(inst.debug, inst.sshkey, inst.port)
 	args := strings.Split(command, " ")
-	if bin := filepath.Base(args[0]); inst.target.HostFuzzer &&
-		(bin == "syz-fuzzer" || bin == "syz-execprog") {
-		// Weird mode for akaros.
-		// Fuzzer and execprog are on host (we did not copy them), so we will run them as is,
-		// but we will also wrap executor with ssh invocation.
-		for i, arg := range args {
-			if strings.HasPrefix(arg, "-executor=") {
-				args[i] = "-executor=" + "/usr/bin/ssh " + strings.Join(sshArgs, " ") +
-					" " + inst.sshuser + "@localhost " + arg[len("-executor="):]
-			}
-			if host := inst.files[arg]; host != "" {
-				args[i] = host
-			}
-		}
-	} else {
-		args = []string{"ssh"}
-		args = append(args, sshArgs...)
-		args = append(args, inst.sshuser+"@localhost", "cd "+inst.targetDir()+" && "+command)
-	}
 	if inst.debug {
 		log.Logf(0, "running command: %#v", args)
 	}

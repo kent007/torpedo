@@ -346,11 +346,12 @@ var List = map[string]map[string]*Target{
 }
 
 var oses = map[string]osCommon{
+	//FIXME disabling shmem and fork server for linux targets
 	"linux": {
 		SyscallNumbers:         true,
 		SyscallPrefix:          "__NR_",
-		ExecutorUsesShmem:      true,
-		ExecutorUsesForkServer: true,
+		ExecutorUsesShmem:      false,
+		ExecutorUsesForkServer: false,
 		KernelObject:           "vmlinux",
 	},
 	"freebsd": {
