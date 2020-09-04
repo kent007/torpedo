@@ -7,6 +7,6 @@ bin/linux_amd64/syz-fuzzer -executor=/syz-executor \
   -sandbox=none \
   -procs=1 \
   -cover=false \
-  -debug=true \
+  -debug=false \
   -test=true \
   -vv=100

@@ -7,6 +7,7 @@ import (
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/olekukonko/tablewriter"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -33,7 +34,7 @@ func MakeExecutorCommand(bin []string) *exec.Cmd {
 	return osutil.Command("docker", dockerArgs...)
 }
 
-func MakeBootstrapCommand(bin []string, count int, stopTimestamp int64, cores string, usage float32) (*exec.Cmd, error) {
+func MakeBootstrapCommand(bin []string, count int, stopTimestamp int64, cores string, usage float64) (*exec.Cmd, error) {
 	dockerArgs := strings.Split(dockerArgString, " ")
 
 	//add core restriction
@@ -43,7 +44,7 @@ func MakeBootstrapCommand(bin []string, count int, stopTimestamp int64, cores st
 
 	//add usage restriction
 	if usage > 0 {
-		dockerArgs = append(dockerArgs, fmt.Sprintf("--cpus=%f", usage))
+		dockerArgs = append(dockerArgs, fmt.Sprintf("--cpus=%0.2f", usage))
 	}
 
 	//add image
@@ -69,7 +70,7 @@ func MakeBootstrapCommand(bin []string, count int, stopTimestamp int64, cores st
 
 type ContainerRestrictions struct {
 	Cores string
-	Usage float32
+	Usage float64
 }
 
 // wraps the standard executor command in a docker command line
@@ -237,8 +238,12 @@ func convertToString(report linuxproc.CPUStat, total uint64) []string {
 	}
 }
 
-func DisplayCPUUsage(before *CPUReport, after *CPUReport) error {
-	table := tablewriter.NewWriter(os.Stdout)
+//TODO make this write to a file
+func DisplayCPUUsage(before *CPUReport, after *CPUReport, file io.Writer) error {
+	if file == nil {
+		file = os.Stdout
+	}
+	table := tablewriter.NewWriter(file)
 	table.SetHeader([]string{"Core", "Busy", "Total", "Percent", "User", "Nice", "System", "Idle", "IO Wait", "IRQ", "SoftIRQ", "Steal", "Guest", "Guest Nice"})
 	for i := range before.cpus {
 		diff, total, err := measureCore(before.cpus[i], after.cpus[i])
@@ -265,5 +270,5 @@ func GetUsageOfCore(before *CPUReport, after *CPUReport, core int) (float64, err
 	if err != nil {
 		return 0, err
 	}
-	return 100 * float64(total-report.Idle) / float64(total), nil
+	return float64(total-report.Idle) / float64(total), nil
 }

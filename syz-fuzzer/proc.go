@@ -285,8 +285,15 @@ func (proc *Proc) executeRaw(opts *ipc.ExecOpts, p *prog.Prog, stat Stat) *ipc.P
 	proc.logProgram(opts, p)
 	for try := 0; ; try++ {
 		atomic.AddUint64(&proc.fuzzer.stats[stat], 1)
+
+		//FIXME added table output here
+		beforeReport, _ := ipc.GetCPUReport()
 		output, info, hanged, err := proc.env.Exec(opts, p)
-		//output, info, hanged, err := ipc.ExecWrapper(proc.env, opts, p)
+		afterReport, _ := ipc.GetCPUReport()
+		f, _ := os.OpenFile("cpu_usage_log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		ipc.DisplayCPUUsage(beforeReport, afterReport, f)
+		f.Close()
+
 		if err != nil {
 			if try > 10 {
 				log.Fatalf("executor %v failed %v times:\n%v", proc.pid, try, err)

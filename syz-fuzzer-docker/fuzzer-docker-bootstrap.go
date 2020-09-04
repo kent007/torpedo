@@ -71,24 +71,34 @@ func main() {
 		}
 	} else if *stopTimestamp != 0 {
 
-		ex := 0
+		total := int64(0)
+		ex := int64(0)
 		stopTime := time.Unix(*stopTimestamp, 0)
 		log.Printf("looping until %s", stopTime.String())
 		if stopTime.Before(time.Now()) {
 			log.Panicf("stop timestamp %d should be in the future!", *stopTimestamp)
 		}
-
-		dur := time.Until(stopTime)
-		for stay, timeout := true, time.After(dur); stay; {
-			select {
-			case <-timeout:
-				stay = false
-			default:
-				ex++
-				out = execute(*executor, strings.Split(*executorArgs, " "), req, progData)
+		/*
+			When the runtime of the program relative to the total time is large, it's possible the timeout fires
+			while the executor is running. To avoid this, we track the average execution time and check whether or not
+			we have enough time left for another run before blindly executing again
+			The effect is more pronounced when the CPU usage is limited, since the program can get BLOCKED while waiting
+			for resources to become available
+		*/
+		stopNano := stopTime.UnixNano()
+		for {
+			now := time.Now().UnixNano()
+			if ex != 0 && now >= stopNano-total/ex {
+				break
 			}
+			before := time.Now().UnixNano()
+			out = execute(*executor, strings.Split(*executorArgs, " "), req, progData)
+			after := time.Now().UnixNano()
+			ex++
+			total += after - before
 		}
 		log.Printf("Total number of program executions: %d", ex)
+		log.Printf("Average execution time: %d", total/ex)
 
 	} else {
 		log.Panicf("Neither -count nor -stop provided, exiting!")

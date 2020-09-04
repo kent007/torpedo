@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
+	"os"
 	"strings"
 	"time"
 
@@ -244,7 +245,6 @@ func checkRevisions(args *checkArgs) error {
 	return nil
 }
 
-//FIXME modified this function heavily for testing purposes
 func checkSimpleProgram(args *checkArgs, features *host.Features) error {
 	log.Logf(0, "testing simple program...")
 	//commented out host setup, since this is useless in a containerized environment
@@ -288,23 +288,33 @@ func checkSimpleContainerProgram(args *checkArgs) error {
 	defer env.Close()
 	p := args.target.DataMmapProg()
 
-	beforeReport, err := ipc.GetCPUReport()
-	if err != nil {
-		return fmt.Errorf("failed to read pre CPU usage: %v", err)
-	}
+	beforeReport, _ := ipc.GetCPUReport()
+	//if err != nil {
+	//	return fmt.Errorf("failed to read pre CPU usage: %v", err)
+	//}
 	r := &ipc.ContainerRestrictions{
 		Cores: "0",
-		Usage: 0.5,
+		Usage: 1.0,
 	}
 	output, info, hanged, err := env.ExecOnCore(args.ipcExecOpts, p, r)
-	afterReport, err := ipc.GetCPUReport()
-	if err != nil {
-		return fmt.Errorf("failed to read post CPU usage: %v", err)
-	}
+	afterReport, _ := ipc.GetCPUReport()
+	//if err != nil {
+	//	return fmt.Errorf("failed to read post CPU usage: %v", err)
+	//}
 
 	usage, _ := ipc.GetUsageOfCore(beforeReport, afterReport, 0)
-	log.Logf(3, "CPU usage of core 0 was: %0.2f", usage)
-	ipc.DisplayCPUUsage(beforeReport, afterReport)
+	ipc.DisplayCPUUsage(beforeReport, afterReport, os.Stdout)
+	log.Logf(3, "CPU usage of core 0 was %0.2f percent, limiting rerun to %0.2f percent", usage*100, usage*50)
+
+	beforeReport, _ = ipc.GetCPUReport()
+	r = &ipc.ContainerRestrictions{
+		Cores: "0",
+		Usage: usage / 2,
+	}
+	output, info, hanged, err = env.ExecOnCore(args.ipcExecOpts, p, r)
+	afterReport, _ = ipc.GetCPUReport()
+
+	ipc.DisplayCPUUsage(beforeReport, afterReport, os.Stdout)
 
 	if err != nil {
 		return fmt.Errorf("program execution failed: %v\n%s", err, output)

@@ -205,14 +205,14 @@ func main() {
 	if r.CheckResult.Features[host.FeatureExtraCoverage].Enabled {
 		config.Flags |= ipc.FlagExtraCover
 	}
-	if r.CheckResult.Features[host.FeatureNetInjection].Enabled {
-		config.Flags |= ipc.FlagEnableTun
-	}
-	if r.CheckResult.Features[host.FeatureNetDevices].Enabled {
-		config.Flags |= ipc.FlagEnableNetDev
-	}
+	//if r.CheckResult.Features[host.FeatureNetInjection].Enabled {
+	//	config.Flags |= ipc.FlagEnableTun
+	//}
+	//if r.CheckResult.Features[host.FeatureNetDevices].Enabled {
+	//	config.Flags |= ipc.FlagEnableNetDev
+	//}
 	config.Flags |= ipc.FlagEnableNetReset
-	config.Flags |= ipc.FlagEnableCgroups
+	//config.Flags |= ipc.FlagEnableCgroups
 	config.Flags |= ipc.FlagEnableCloseFds
 	if r.CheckResult.Features[host.FeatureDevlinkPCI].Enabled {
 		config.Flags |= ipc.FlagEnableDevlinkPCI

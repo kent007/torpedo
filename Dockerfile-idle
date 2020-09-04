@@ -1,0 +1,6 @@
+FROM scratch
+
+COPY idle .
+
+# pass along command line args
+ENTRYPOINT ["/idle"]

@@ -252,7 +252,7 @@ var rateLimit = time.NewTicker(1 * time.Second)
 // FIXME always spawns on core 0 with 100% utilization
 func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInfo, hanged bool, err0 error) {
 	r := &ContainerRestrictions{
-		Cores: "",
+		Cores: "0",
 		Usage: 1.0,
 	}
 	return env.ExecOnCore(opts, p, r)

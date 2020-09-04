@@ -111,7 +111,7 @@ endif
 
 all: host target
 host: manager runtest repro mutate prog2c upgrade db
-target: fuzzer execprog stress executor dockerbootstrap
+target: fuzzer execprog stress executor dockerbootstrap idle
 
 executor: descriptions
 ifneq ("$(BUILDOS)", "$(NATIVEBUILDOS)")
@@ -156,7 +156,10 @@ fuzzer: descriptions
 	GOOS=$(TARGETGOOS) GOARCH=$(TARGETGOARCH) $(GO) build $(GOTARGETFLAGS) -o ./bin/$(TARGETOS)_$(TARGETVMARCH)/syz-fuzzer$(EXE) github.com/google/syzkaller/syz-fuzzer
 
 dockerbootstrap: descriptions
-	GOOD=$(TARGETGOOS) GOARCH=$(TARGETGOARCH) $(GO) build $(GOTARGETFLAGS) -o ./bin/$(TARGETOS)_$(TARGETVMARCH)/docker-bootstrap github.com/google/syzkaller/syz-fuzzer-docker
+	GOOS=$(TARGETGOOS) GOARCH=$(TARGETGOARCH) $(GO) build $(GOTARGETFLAGS) -o ./bin/$(TARGETOS)_$(TARGETVMARCH)/docker-bootstrap github.com/google/syzkaller/syz-fuzzer-docker
+
+idle: descriptions
+	GOOS=$(TARGETGOOS) GOARCH=$(TARGETGOARCH) $(GO) build $(GOTARGETFLAGS) -o ./bin/$(TARGETOS)_$(TARGETVMARCH)/idle github.com/google/syzkaller/idle
 
 execprog: descriptions
 	GOOS=$(TARGETGOOS) GOARCH=$(TARGETGOARCH) $(GO) build $(GOTARGETFLAGS) -o ./bin/$(TARGETOS)_$(TARGETVMARCH)/syz-execprog$(EXE) github.com/google/syzkaller/tools/syz-execprog
