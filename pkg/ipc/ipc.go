@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -249,16 +250,23 @@ var rateLimit = time.NewTicker(1 * time.Second)
 // info: per-call info
 // hanged: program hanged and was killed
 // err0: failed to start the process or bug in executor itself
-// FIXME always spawns on core 0 with 100% utilization
-func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInfo, hanged bool, err0 error) {
-	r := &ContainerRestrictions{
-		Cores: "0",
-		Usage: 1.0,
+func (env *Env) ExecOnCore(opts *ExecOpts, p *prog.Prog, r *ContainerRestrictions) (output []byte, info *ProgInfo, hanged bool, err0 error) {
+	if env.cmd == nil {
+		if r == nil {
+			r = &ContainerRestrictions{
+				Cores: strconv.Itoa(env.pid),
+				Usage: 1.0,
+				Count: 1,
+			}
+		}
+		tmpDirPath := "./"
+		atomic.AddUint64(&env.StatRestarts, 1)
+		env.cmd, _ = makeContainerCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath, *r)
 	}
-	return env.ExecOnCore(opts, p, r)
+	return env.Exec(opts, p)
 }
 
-func (env *Env) ExecOnCore(opts *ExecOpts, p *prog.Prog, r *ContainerRestrictions) (output []byte, info *ProgInfo, hanged bool, err0 error) {
+func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInfo, hanged bool, err0 error) {
 	// Copy-in serialized program.
 	progSize, err := p.SerializeForExec(env.in)
 	if err != nil {
@@ -279,7 +287,7 @@ func (env *Env) ExecOnCore(opts *ExecOpts, p *prog.Prog, r *ContainerRestriction
 		tmpDirPath := "./"
 		atomic.AddUint64(&env.StatRestarts, 1)
 		//make a command in a container
-		env.cmd, err0 = makeContainerCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath, *r)
+		env.cmd, err0 = makeCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath)
 	}
 
 	output, hanged, err0 = env.cmd.exec(opts, progData)
@@ -290,7 +298,7 @@ func (env *Env) ExecOnCore(opts *ExecOpts, p *prog.Prog, r *ContainerRestriction
 		return
 	}
 
-	//TODO look at possibly configuring a different fallback signal
+	//TODO run this in a loop and merge all coverage/signal information together to return a better bundle
 	info, err0 = env.parseOutput(p)
 	if err0 != nil {
 		log.Logf(1, "Error parsing output: %v", err0)

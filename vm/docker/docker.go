@@ -261,9 +261,10 @@ func (pool *Pool) ctor(workdir, sshkey, sshuser string, index int) (vmimpl.Insta
 	}
 	//put the outputmerger in here, migrated from boot
 	var tee io.Writer
-	if inst.debug {
-		tee = os.Stdout
-	}
+	//if inst.debug {
+	//FIXME forced fuzzer to always write out to manager stdout stream
+	tee = os.Stdout
+	//}
 	inst.merger = vmimpl.NewOutputMerger(tee)
 	return inst, nil
 }

@@ -5,7 +5,7 @@
   "workdir": "/home/kent/go/src/github.com/google/syzkaller/workdir",
   "syzkaller": "/home/kent/go/src/github.com/google/syzkaller",
   "cover": false,
-  "procs": 1,
+  "procs": 2,
   "type": "docker",
   "vm": {
     "count": 1

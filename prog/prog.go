@@ -412,3 +412,9 @@ func (p *Prog) sanitize(fix bool) error {
 	}
 	return nil
 }
+
+// containsCall checks to see whether or not the program has call C at position index
+// FIXME this is very shallow, doesn't check arguments
+func (p *Prog) ContainsCall(c *Call, index int) bool {
+	return len(p.Calls)-1 >= index && c.Meta.ID == p.Calls[index].Meta.ID
+}

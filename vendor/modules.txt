@@ -12,6 +12,8 @@ cloud.google.com/go/storage
 github.com/BurntSushi/toml
 # github.com/c9s/goprocinfo v0.0.0-20200311234719-5750cbd54a3b
 github.com/c9s/goprocinfo/linux
+# github.com/dustin/go-humanize v1.0.0
+github.com/dustin/go-humanize
 # github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e
 github.com/golang/groupcache/lru
 # github.com/golang/protobuf v1.3.3
@@ -40,6 +42,12 @@ github.com/ianlancetaylor/demangle
 github.com/jstemmer/go-junit-report
 github.com/jstemmer/go-junit-report/formatter
 github.com/jstemmer/go-junit-report/parser
+# github.com/kent007/linux-inspect v1.0.4
+github.com/kent007/linux-inspect/pkg/fileutil
+github.com/kent007/linux-inspect/schema
+github.com/kent007/linux-inspect/top
+# github.com/kr/pty v1.1.1
+github.com/kr/pty
 # github.com/mattn/go-runewidth v0.0.7
 github.com/mattn/go-runewidth
 # github.com/olekukonko/tablewriter v0.0.4

@@ -16,10 +16,12 @@ import (
 )
 
 const (
-	image   = "syzkaller-image"
-	timeout = 5 * time.Second
-	//TODO change name and consider re-adding --rm when this is done
-	dockerArgString = "run -a stdin -a stdout -a stderr -i --runtime=runsc --cap-add=ALL"
+	image     = "syzkaller-image"
+	idleImage = "idle-amd64"
+	timeout   = 10 * time.Second
+	//FIXME --rm here, containers are not preserved in case of failure
+	//FIXME not using --runtime=runsc --cap-add=ALL
+	dockerArgString = "run -a stdin -a stdout --rm -a stderr -i"
 )
 
 // make a command that invokes the executor directly without using the wrapper
@@ -34,7 +36,8 @@ func MakeExecutorCommand(bin []string) *exec.Cmd {
 	return osutil.Command("docker", dockerArgs...)
 }
 
-func MakeBootstrapCommand(bin []string, count int, stopTimestamp int64, cores string, usage float64) (*exec.Cmd, error) {
+//count argument takes priority, otherwise timeout
+func MakeBootstrapCommand(bin []string, count uint64, stopTimestamp int64, cores string, usage float64) (*exec.Cmd, error) {
 	dockerArgs := strings.Split(dockerArgString, " ")
 
 	//add core restriction
@@ -68,9 +71,20 @@ func MakeBootstrapCommand(bin []string, count int, stopTimestamp int64, cores st
 	return osutil.Command("docker", dockerArgs...), nil
 }
 
+func MakeIdleCommand(stopTimestamp int64, cores string) *exec.Cmd {
+	commands := strings.Split(dockerArgString, " ")
+	if cores != "" {
+		commands = append(commands, fmt.Sprintf("--cpuset-cpus=%s", cores))
+	}
+	commands = append(commands, idleImage, fmt.Sprintf("-stop=%d", stopTimestamp))
+	return osutil.Command("docker", commands...)
+}
+
 type ContainerRestrictions struct {
-	Cores string
-	Usage float64
+	Cores         string
+	Usage         float64
+	Count         uint64
+	StopTimestamp int64
 }
 
 // wraps the standard executor command in a docker command line
@@ -82,10 +96,11 @@ func makeContainerCommand(pid int, bin []string, config *Config, inFile, outFile
 		return nil, errors.New("containerized commands do not support passing additional file descriptors")
 	}
 
+	//FIXME this timeout has to be non-zero, but still geq than the timeout passed to the container, if any,
 	c := &command{
 		pid:     pid,
 		config:  config,
-		timeout: sanitizeTimeout(config),
+		timeout: timeout,
 		dir:     "",
 		outmem:  outmem,
 	}
@@ -94,9 +109,6 @@ func makeContainerCommand(pid int, bin []string, config *Config, inFile, outFile
 			c.close()
 		}
 	}()
-
-	//TODO timeout should be passed from a higher level function and put into command struct
-	stopTimestamp := time.Now().Add(c.timeout).Unix()
 
 	// Output capture pipe.
 	rp, wp, err := os.Pipe()
@@ -124,7 +136,7 @@ func makeContainerCommand(pid int, bin []string, config *Config, inFile, outFile
 	c.readDone = make(chan []byte, 1)
 	c.exited = make(chan struct{})
 
-	cmd, err := MakeBootstrapCommand(bin, 0, stopTimestamp, r.Cores, r.Usage)
+	cmd, err := MakeBootstrapCommand(bin, r.Count, r.StopTimestamp, r.Cores, r.Usage)
 	if err != nil {
 		return nil, fmt.Errorf("could not make bootstrap command: %v", err)
 	}
@@ -182,8 +194,8 @@ func makeContainerCommand(pid int, bin []string, config *Config, inFile, outFile
 }
 
 type CPUReport struct {
-	all  linuxproc.CPUStat
-	cpus []linuxproc.CPUStat
+	All  linuxproc.CPUStat
+	Cpus []linuxproc.CPUStat
 }
 
 func GetCPUReport() (*CPUReport, error) {
@@ -198,7 +210,7 @@ func GetCPUReport() (*CPUReport, error) {
 	return report, nil
 }
 
-func measureCore(b linuxproc.CPUStat, a linuxproc.CPUStat) (*linuxproc.CPUStat, uint64, error) {
+func MeasureCore(b linuxproc.CPUStat, a linuxproc.CPUStat) (*linuxproc.CPUStat, uint64, error) {
 	if b.Id != a.Id {
 		return nil, 0, fmt.Errorf("tried to compare 2 different cores!")
 	}
@@ -238,22 +250,21 @@ func convertToString(report linuxproc.CPUStat, total uint64) []string {
 	}
 }
 
-//TODO make this write to a file
 func DisplayCPUUsage(before *CPUReport, after *CPUReport, file io.Writer) error {
 	if file == nil {
 		file = os.Stdout
 	}
 	table := tablewriter.NewWriter(file)
 	table.SetHeader([]string{"Core", "Busy", "Total", "Percent", "User", "Nice", "System", "Idle", "IO Wait", "IRQ", "SoftIRQ", "Steal", "Guest", "Guest Nice"})
-	for i := range before.cpus {
-		diff, total, err := measureCore(before.cpus[i], after.cpus[i])
+	for i := range before.Cpus {
+		diff, total, err := MeasureCore(before.Cpus[i], after.Cpus[i])
 		if err != nil {
 			return err
 		}
 		table.Append(convertToString(*diff, total))
 	}
 	//footer will be total
-	diff, total, err := measureCore(before.all, after.all)
+	diff, total, err := MeasureCore(before.All, after.All)
 	if err != nil {
 		return err
 	}
@@ -263,10 +274,14 @@ func DisplayCPUUsage(before *CPUReport, after *CPUReport, file io.Writer) error 
 }
 
 func GetUsageOfCore(before *CPUReport, after *CPUReport, core int) (float64, error) {
-	if core < 0 || core > len(before.cpus) {
-		return 0, fmt.Errorf("core %d does not exist", core)
+	var report *linuxproc.CPUStat
+	var total uint64
+	var err error
+	if core < 0 || core > len(before.Cpus) {
+		report, total, err = MeasureCore(before.All, after.All)
+	} else {
+		report, total, err = MeasureCore(before.Cpus[core], after.Cpus[core])
 	}
-	report, total, err := measureCore(before.cpus[core], after.cpus[core])
 	if err != nil {
 		return 0, err
 	}

@@ -156,6 +156,10 @@ func checkMachine(args *checkArgs) (*rpctype.CheckArgs, error) {
 		return nil, err
 	}
 	log.Logf(1, "no problem checking simple program")
+
+	//log.Logf(1, "now testing kthreadd smash functionality")
+	//testSmash(args)
+
 	return checkCalls(args, features)
 }
 
@@ -288,32 +292,29 @@ func checkSimpleContainerProgram(args *checkArgs) error {
 	defer env.Close()
 	p := args.target.DataMmapProg()
 
-	beforeReport, _ := ipc.GetCPUReport()
-	//if err != nil {
-	//	return fmt.Errorf("failed to read pre CPU usage: %v", err)
-	//}
+	log.Logf(3, "running program:\n %s", string(p.Serialize()))
+
 	r := &ipc.ContainerRestrictions{
 		Cores: "0",
 		Usage: 1.0,
+		Count: 100,
 	}
+	beforeReport, _ := ipc.GetCPUReport()
 	output, info, hanged, err := env.ExecOnCore(args.ipcExecOpts, p, r)
 	afterReport, _ := ipc.GetCPUReport()
-	//if err != nil {
-	//	return fmt.Errorf("failed to read post CPU usage: %v", err)
-	//}
 
 	usage, _ := ipc.GetUsageOfCore(beforeReport, afterReport, 0)
 	ipc.DisplayCPUUsage(beforeReport, afterReport, os.Stdout)
-	log.Logf(3, "CPU usage of core 0 was %0.2f percent, limiting rerun to %0.2f percent", usage*100, usage*50)
+	log.Logf(0, "CPU usage of core 0 was %0.2f percent, limiting rerun to %0.2f percent", usage*100, usage*50)
 
-	beforeReport, _ = ipc.GetCPUReport()
 	r = &ipc.ContainerRestrictions{
 		Cores: "0",
 		Usage: usage / 2,
+		Count: 100,
 	}
+	beforeReport, _ = ipc.GetCPUReport()
 	output, info, hanged, err = env.ExecOnCore(args.ipcExecOpts, p, r)
 	afterReport, _ = ipc.GetCPUReport()
-
 	ipc.DisplayCPUUsage(beforeReport, afterReport, os.Stdout)
 
 	if err != nil {

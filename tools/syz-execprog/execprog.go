@@ -38,6 +38,7 @@ var (
 	flagFaultNth  = flag.Int("fault_nth", 0, "inject fault on n-th operation (0-based)")
 	flagEnable    = flag.String("enable", "none", "enable only listed additional features")
 	flagDisable   = flag.String("disable", "none", "enable all additional features except listed")
+	flagContainer = flag.Bool("container", false, "run the executor in a container")
 )
 
 func main() {
@@ -74,8 +75,10 @@ func main() {
 		}
 	}
 	config, execOpts := createConfig(target, features, featuresFlags)
-	if err = host.Setup(target, features, featuresFlags, config.Executor); err != nil {
-		log.Fatal(err)
+	if !*flagContainer {
+		if err = host.Setup(target, features, featuresFlags, config.Executor); err != nil {
+			log.Fatal(err)
+		}
 	}
 	var gateCallback func()
 	if features[host.FeatureLeak].Enabled {
@@ -158,7 +161,15 @@ func (ctx *Context) execute(pid int, env *ipc.Env, entry *prog.LogEntry) {
 	if *flagOutput {
 		ctx.logProgram(pid, entry.P, callOpts)
 	}
-	output, info, hanged, err := env.Exec(callOpts, entry.P)
+	var output []byte
+	var info *ipc.ProgInfo
+	var hanged bool
+	var err error
+	if *flagContainer {
+		output, info, hanged, err = env.ExecOnCore(callOpts, entry.P, nil)
+	} else {
+		output, info, hanged, err = env.Exec(callOpts, entry.P)
+	}
 	//output, info, hanged, err := ipc.ExecWrapper(env, callOpts, entry.P)
 	if ctx.config.Flags&ipc.FlagDebug != 0 || err != nil {
 		log.Logf(0, "result: hanged=%v err=%v\n\n%s", hanged, err, output)

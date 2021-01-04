@@ -31,6 +31,7 @@ const (
 	ProgCandidate ProgTypes = 1 << iota
 	ProgMinimized
 	ProgSmashed
+	ProgTriaged
 	ProgNormal ProgTypes = 0
 )
 
@@ -87,6 +88,7 @@ func (wq *WorkQueue) enqueue(item interface{}) {
 	}
 }
 
+//modified to not dequeue smashes
 func (wq *WorkQueue) dequeue() (item interface{}) {
 	wq.mu.RLock()
 	if len(wq.triageCandidate)+len(wq.candidate)+len(wq.triage)+len(wq.smash) == 0 {
@@ -109,10 +111,6 @@ func (wq *WorkQueue) dequeue() (item interface{}) {
 		last := len(wq.triage) - 1
 		item = wq.triage[last]
 		wq.triage = wq.triage[:last]
-	} else if len(wq.smash) != 0 {
-		last := len(wq.smash) - 1
-		item = wq.smash[last]
-		wq.smash = wq.smash[:last]
 	}
 	wq.mu.Unlock()
 	if wantCandidates {
@@ -122,6 +120,17 @@ func (wq *WorkQueue) dequeue() (item interface{}) {
 		}
 	}
 	return item
+}
+
+//special standalone function to dequeue smashes
+func (wq *WorkQueue) dequeueSmash() (item *WorkSmash) {
+	item = nil
+	if len(wq.smash) != 0 {
+		last := len(wq.smash) - 1
+		item = wq.smash[last]
+		wq.smash = wq.smash[:last]
+	}
+	return
 }
 
 func (wq *WorkQueue) wantCandidates() bool {

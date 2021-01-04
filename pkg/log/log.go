@@ -18,7 +18,7 @@ import (
 )
 
 var (
-	flagV        = flag.Int("vv", 0, "verbosity")
+	FlagV        = flag.Int("vv", 0, "verbosity")
 	mu           sync.Mutex
 	cacheMem     int
 	cacheMaxMem  int
@@ -61,7 +61,7 @@ func CachedLogOutput() string {
 
 func Logf(v int, msg string, args ...interface{}) {
 	mu.Lock()
-	doLog := v <= *flagV
+	doLog := v <= *FlagV
 	if cacheEntries != nil && v <= 1 {
 		cacheMem -= len(cacheEntries[cachePos])
 		if cacheMem < 0 {

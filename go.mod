@@ -4,12 +4,15 @@ go 1.13
 
 require (
 	cloud.google.com/go v0.52.1-0.20200128230113-ad7cd32b39df // indirect
+	cloud.google.com/go/bigquery v1.0.1
 	cloud.google.com/go/storage v1.0.0
 	github.com/c9s/goprocinfo v0.0.0-20200311234719-5750cbd54a3b
+	github.com/dustin/go-humanize v1.0.0 // indirect
 	github.com/golang/protobuf v1.3.3 // indirect
 	github.com/google/go-cmp v0.4.0
 	github.com/ianlancetaylor/demangle v0.0.0-20181102032728-5e5cf60278f6
 	github.com/jstemmer/go-junit-report v0.9.2-0.20191008195320-984a47ca6b0a // indirect
+	github.com/kent007/linux-inspect v1.0.4
 	github.com/olekukonko/tablewriter v0.0.4
 	github.com/pkg/errors v0.9.1
 	go.opencensus.io v0.22.3-0.20200113180412-d851005f548f // indirect

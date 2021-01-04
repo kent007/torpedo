@@ -553,7 +553,7 @@ func (mgr *Manager) runInstance(index int) (*Crash, error) {
 		}
 	}
 
-	fuzzerV := 0
+	fuzzerV := *log.FlagV
 	procs := mgr.cfg.Procs
 	if *flagDebug {
 		fuzzerV = 100

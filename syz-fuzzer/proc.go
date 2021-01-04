@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -23,9 +24,15 @@ import (
 )
 
 // Proc represents a single fuzzing process (executor).
+//FIXME added a waitgroup, a mutex, a last info, and a stop timestamp
 type Proc struct {
 	fuzzer            *Fuzzer
 	pid               int
+	observer          *sync.WaitGroup
+	procGroup         *sync.WaitGroup
+	stopTimestamp     int64
+	lastInfo          *ipc.ProgInfo
+	programSelector   chan interface{}
 	env               *ipc.Env
 	rnd               *rand.Rand
 	execOpts          *ipc.ExecOpts
@@ -34,7 +41,7 @@ type Proc struct {
 	execOptsNoCollide *ipc.ExecOpts
 }
 
-func newProc(fuzzer *Fuzzer, pid int) (*Proc, error) {
+func newProc(fuzzer *Fuzzer, pid int, observer *sync.WaitGroup, procGroup *sync.WaitGroup) (*Proc, error) {
 	env, err := ipc.MakeEnv(fuzzer.config, pid)
 	if err != nil {
 		return nil, err
@@ -51,6 +58,9 @@ func newProc(fuzzer *Fuzzer, pid int) (*Proc, error) {
 		pid:               pid,
 		env:               env,
 		rnd:               rnd,
+		observer:          observer,
+		procGroup:         procGroup,
+		programSelector:   make(chan interface{}, 1),
 		execOpts:          fuzzer.execOpts,
 		execOptsCover:     &execOptsCover,
 		execOptsComps:     &execOptsComps,
@@ -74,8 +84,10 @@ func (proc *Proc) loop() {
 				proc.triageInput(item)
 			case *WorkCandidate:
 				proc.execute(proc.execOpts, item.p, item.flags, StatCandidate)
-			case *WorkSmash:
-				proc.smashInput(item)
+			//case *WorkSmash:
+			//	//proc.smashInput(item)
+			//	//proc.smashByKernelTime(item)
+			//	proc.smashByKthreadD(item)
 			default:
 				log.Fatalf("unknown work type: %#v", item)
 			}
@@ -151,6 +163,8 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 						continue
 					}
 					thisSignal, _ := getSignalAndCover(p1, info, call1)
+					//if the intersection of newsignal and the current run is the same as the new signal...
+					//meaning that the current is GEQ the current signal, or that the signal didn't decrease
 					if newSignal.Intersection(thisSignal).Len() == newSignal.Len() {
 						return true
 					}
@@ -173,7 +187,10 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 	proc.fuzzer.addInputToCorpus(item.p, inputSignal, sig)
 
 	if item.flags&ProgSmashed == 0 {
-		proc.fuzzer.workQueue.enqueue(&WorkSmash{item.p, item.call})
+		proc.fuzzer.workQueue.enqueue(&WorkSmash{
+			p:    item.p,
+			call: item.call,
+		})
 	}
 }
 
@@ -286,13 +303,7 @@ func (proc *Proc) executeRaw(opts *ipc.ExecOpts, p *prog.Prog, stat Stat) *ipc.P
 	for try := 0; ; try++ {
 		atomic.AddUint64(&proc.fuzzer.stats[stat], 1)
 
-		//FIXME added table output here
-		beforeReport, _ := ipc.GetCPUReport()
 		output, info, hanged, err := proc.env.Exec(opts, p)
-		afterReport, _ := ipc.GetCPUReport()
-		f, _ := os.OpenFile("cpu_usage_log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		ipc.DisplayCPUUsage(beforeReport, afterReport, f)
-		f.Close()
 
 		if err != nil {
 			if try > 10 {

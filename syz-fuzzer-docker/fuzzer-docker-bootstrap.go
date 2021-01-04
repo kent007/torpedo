@@ -36,15 +36,16 @@ func readExecRequest() (*executeReq, error) {
 
 //use flags for 3 args:
 // !! these all return pointers
+//TODO eventually capture the signal and coverage from each program, then merge and write it all back as one blob
 func main() {
 	var count = flag.Int("count", 0, "how many time to rerun the program")
-	var stopTimestamp = flag.Int64("stop", 0, "loop the program until this unix timestamp")
+	var stopTimestampNano = flag.Int64("stop", 0, "loop the program until this unix nano timestamp")
 	var executor = flag.String("executor", "/syz-executor", "the executor binary")
 	var executorArgs = flag.String("executorArgs", "", "args for the executor")
 
 	log.Printf("%v", os.Args)
 	flag.Parse()
-	log.Printf("count: %d; stopTimestamp: %d; executor: %s; executorArgs: %s", *count, *stopTimestamp, *executor, *executorArgs)
+	log.Printf("count: %d; stopTimestampNano: %d; executor: %s; executorArgs: %s", *count, *stopTimestampNano, *executor, *executorArgs)
 
 	log.SetPrefix("docker-bootstrap: ")
 
@@ -69,14 +70,15 @@ func main() {
 		for i := 0; i < *count; i++ {
 			out = execute(*executor, strings.Split(*executorArgs, " "), req, progData)
 		}
-	} else if *stopTimestamp != 0 {
+		log.Printf("Successfully completed %d runs", *count)
+	} else if *stopTimestampNano != 0 {
 
 		total := int64(0)
 		ex := int64(0)
-		stopTime := time.Unix(*stopTimestamp, 0)
+		stopTime := time.Unix(0, *stopTimestampNano)
 		log.Printf("looping until %s", stopTime.String())
 		if stopTime.Before(time.Now()) {
-			log.Panicf("stop timestamp %d should be in the future!", *stopTimestamp)
+			log.Panicf("stop timestamp %d should be in the future!", *stopTimestampNano)
 		}
 		/*
 			When the runtime of the program relative to the total time is large, it's possible the timeout fires
@@ -85,20 +87,18 @@ func main() {
 			The effect is more pronounced when the CPU usage is limited, since the program can get BLOCKED while waiting
 			for resources to become available
 		*/
-		stopNano := stopTime.UnixNano()
 		for {
-			now := time.Now().UnixNano()
-			if ex != 0 && now >= stopNano-total/ex {
+			before := time.Now().UnixNano()
+			if ex != 0 && before >= *stopTimestampNano-total/ex {
 				break
 			}
-			before := time.Now().UnixNano()
 			out = execute(*executor, strings.Split(*executorArgs, " "), req, progData)
 			after := time.Now().UnixNano()
 			ex++
 			total += after - before
 		}
 		log.Printf("Total number of program executions: %d", ex)
-		log.Printf("Average execution time: %d", total/ex)
+		log.Printf("Average execution time: %s", time.Duration(total/ex).String())
 
 	} else {
 		log.Panicf("Neither -count nor -stop provided, exiting!")

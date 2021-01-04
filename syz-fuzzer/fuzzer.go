@@ -6,6 +6,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	golog "log"
 	"math/rand"
 	"net/http"
 	_ "net/http/pprof"
@@ -104,7 +105,7 @@ const (
 
 func main() {
 	debug.SetGCPercent(50)
-
+	golog.SetPrefix("[SYZ-FUZZER] ")
 	var (
 		flagName    = flag.String("name", "test", "unique name for manager")
 		flagOS      = flag.String("os", runtime.GOOS, "target OS")
@@ -146,7 +147,17 @@ func main() {
 		ipcExecOpts: execOpts,
 	}
 	if *flagTest {
+		//currently broke, since I added a bunch of dependencies on things
+		//it'd probably be easier to just make this thing run on its own without the manager
 		testImage(*flagManager, checkArgs)
+		//needPoll := make(chan struct{}, 1)
+		//run some idle loops here
+		fuzzer := Fuzzer{
+			config:   config,
+			execOpts: execOpts,
+			target:   target,
+		}
+		fuzzer.observerRoutine(*flagProcs, true)
 		return
 	}
 
@@ -205,6 +216,7 @@ func main() {
 	if r.CheckResult.Features[host.FeatureExtraCoverage].Enabled {
 		config.Flags |= ipc.FlagExtraCover
 	}
+	//FIXME disabled these to increase speed
 	//if r.CheckResult.Features[host.FeatureNetInjection].Enabled {
 	//	config.Flags |= ipc.FlagEnableTun
 	//}
@@ -250,14 +262,8 @@ func main() {
 	}
 	fuzzer.choiceTable = target.BuildChoiceTable(fuzzer.corpus, calls)
 
-	for pid := 0; pid < *flagProcs; pid++ {
-		proc, err := newProc(fuzzer, pid)
-		if err != nil {
-			log.Fatalf("failed to create proc: %v", err)
-		}
-		fuzzer.procs = append(fuzzer.procs, proc)
-		go proc.loop()
-	}
+	//start a goroutine that manages procs
+	go fuzzer.observerRoutine(*flagProcs, false)
 
 	fuzzer.pollLoop()
 }
