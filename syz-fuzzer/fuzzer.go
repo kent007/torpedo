@@ -116,6 +116,9 @@ func main() {
 		flagPprof   = flag.String("pprof", "", "address to serve pprof profiles")
 		flagTest    = flag.Bool("test", false, "enable image testing mode")      // used by syz-ci
 		flagRunTest = flag.Bool("runtest", false, "enable program testing mode") // used by pkg/runtest
+		flagSeedDir = flag.String("seeds", "", "directory from which to read seed programs")
+		flagRuntime = flag.String("runtime", "runc", "container runtime to use")
+		flagCaps    = flag.String("caps", "", "additional container capabilities")
 	)
 	flag.Parse()
 	outputType := parseOutputType(*flagOutput)
@@ -146,20 +149,6 @@ func main() {
 		ipcConfig:   config,
 		ipcExecOpts: execOpts,
 	}
-	if *flagTest {
-		//currently broke, since I added a bunch of dependencies on things
-		//it'd probably be easier to just make this thing run on its own without the manager
-		testImage(*flagManager, checkArgs)
-		//needPoll := make(chan struct{}, 1)
-		//run some idle loops here
-		fuzzer := Fuzzer{
-			config:   config,
-			execOpts: execOpts,
-			target:   target,
-		}
-		fuzzer.observerRoutine(*flagProcs, true)
-		return
-	}
 
 	if *flagPprof != "" {
 		go func() {
@@ -171,13 +160,20 @@ func main() {
 	}
 
 	log.Logf(0, "dialing manager at %v", *flagManager)
-	manager, err := rpctype.NewRPCClient(*flagManager)
-	if err != nil {
-		log.Fatalf("failed to connect to manager: %v ", err)
+	var manager *rpctype.RPCClient
+	if *flagTest {
+		log.Logf(1, "skipping dial attempt in testing mode")
+	} else {
+		manager, err = rpctype.NewRPCClient(*flagManager)
+		if err != nil {
+			log.Fatalf("failed to connect to manager: %v ", err)
+		}
 	}
 	a := &rpctype.ConnectArgs{Name: *flagName}
 	r := &rpctype.ConnectRes{}
-	if err := manager.Call("Manager.Connect", a, r); err != nil {
+	if *flagTest {
+		log.Logf(1, "skipping Manager.Connect attempt in testing mode")
+	} else if err := manager.Call("Manager.Connect", a, r); err != nil {
 		log.Fatalf("failed to connect to manager: %v ", err)
 	}
 	featureFlags, err := csource.ParseFeaturesFlags("none", "none", true)
@@ -198,7 +194,9 @@ func main() {
 			r.CheckResult.Error = err.Error()
 		}
 		r.CheckResult.Name = *flagName
-		if err := manager.Call("Manager.Check", r.CheckResult, nil); err != nil {
+		if *flagTest {
+			log.Logf(1, "skipping Manager.Check call in testing mode")
+		} else if err := manager.Call("Manager.Check", r.CheckResult, nil); err != nil {
 			log.Fatalf("Manager.Check call failed: %v", err)
 		}
 		if r.CheckResult.Error != "" {
@@ -231,7 +229,6 @@ func main() {
 	}
 
 	if *flagRunTest {
-		log.Logf(1, "CALLING RUNTEST")
 		runTest(target, manager, *flagName, config.Executor)
 		return
 	}
@@ -254,7 +251,8 @@ func main() {
 	gateCallback := fuzzer.useBugFrames(r, *flagProcs)
 	fuzzer.gate = ipc.NewGate(2**flagProcs, gateCallback)
 
-	for i := 0; fuzzer.poll(i == 0, nil); i++ {
+	//FIXME shorted this using flagTest
+	for i := 0; !*flagTest && fuzzer.poll(i == 0, nil); i++ {
 	}
 	calls := make(map[*prog.Syscall]bool)
 	for _, id := range r.CheckResult.EnabledCalls[sandbox] {
@@ -263,9 +261,24 @@ func main() {
 	fuzzer.choiceTable = target.BuildChoiceTable(fuzzer.corpus, calls)
 
 	//start a goroutine that manages procs
-	go fuzzer.observerRoutine(*flagProcs, false)
+	//if the test flag is thrown, we want to idle
+	if *flagSeedDir != "" {
+		err = fuzzer.readSeedPrograms(*flagSeedDir)
+		if err != nil {
+			log.Logf(1, "error reading seed programs: %v", err)
+		}
+	}
 
-	fuzzer.pollLoop()
+	go fuzzer.observerRoutine(*flagProcs, *flagTest, *flagRuntime, *flagCaps)
+
+	if *flagTest {
+		log.Logf(1, "entering dummy loop that doesn't do anything")
+		for {
+			time.Sleep(100 * time.Second)
+		}
+	} else {
+		fuzzer.pollLoop()
+	}
 }
 
 // Returns gateCallback for leak checking if enabled.

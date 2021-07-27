@@ -3,9 +3,13 @@
   "target": "linux/amd64",
   "http": ":12345",
   "workdir": "/home/kent/go/src/github.com/google/syzkaller/workdir",
+  "seeds": "/home/kent/research/seeds/",
+  "runtime": "runc",
+  "capabilities": "UNCONFINED",
   "syzkaller": "/home/kent/go/src/github.com/google/syzkaller",
   "cover": false,
-  "procs": 2,
+  "disable_syscalls": ["syz_genetlink_get_family_id", "fsync", "sync", "fdatasync", "socket", "socketpair"],
+  "procs": 3,
   "type": "docker",
   "vm": {
     "count": 1

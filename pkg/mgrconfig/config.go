@@ -19,6 +19,12 @@ type Config struct {
 	// - <workdir>/corpus.db: corpus with interesting programs
 	// - <workdir>/instance-x: per VM instance temporary files
 	Workdir string `json:"workdir"`
+	// Location of seed-dir for seed programs
+	Seeds string `json:"seeds,omitempty"`
+	// Container runtime to use, optional
+	Runtime string `json:"runtime,omitempty"`
+	// Capabilities to give to the container, optional
+	Capabilities string `json:"capabilities,omitempty"`
 	// Refers to a directory. Optional.
 	// Each VM will get a recursive copy of the files that are present in workdir_template.
 	// VM config can then use these private copies as needed. The copy directory

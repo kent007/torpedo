@@ -36,12 +36,10 @@ func GetUsageOfProcs(rows []top.Row, pids map[int64]bool, categories []string) m
 		usages[cat] = float64(0)
 	}
 	usages["other"] = float64(0)
-	usages["total"] = float64(0)
 	for _, row := range rows {
 		//only interested in rows that are more than 0% CPU
 		//log.Logf(4, "command: " + row.COMMAND)
 		if row.CPUPercent > 0 {
-			usages["total"] += row.CPUPercent
 			//try to match it into a category based on COMMAND
 			for _, cat := range categories {
 				// found a category

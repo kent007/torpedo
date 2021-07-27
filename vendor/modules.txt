@@ -42,7 +42,7 @@ github.com/ianlancetaylor/demangle
 github.com/jstemmer/go-junit-report
 github.com/jstemmer/go-junit-report/formatter
 github.com/jstemmer/go-junit-report/parser
-# github.com/kent007/linux-inspect v1.0.4
+# github.com/kent007/linux-inspect v1.0.8
 github.com/kent007/linux-inspect/pkg/fileutil
 github.com/kent007/linux-inspect/schema
 github.com/kent007/linux-inspect/top

@@ -2575,21 +2575,21 @@ static void sandbox_common()
 
 	// CLONE_NEWNS/NEWCGROUP cause EINVAL on some systems,
 	// so we do them separately of clone in do_sandbox_namespace.
-	if (unshare(CLONE_NEWNS)) {
-		debug("unshare(CLONE_NEWNS): %d\n", errno);
-	}
-	if (unshare(CLONE_NEWIPC)) {
-		debug("unshare(CLONE_NEWIPC): %d\n", errno);
-	}
-	if (unshare(0x02000000)) {
-		debug("unshare(CLONE_NEWCGROUP): %d\n", errno);
-	}
-	if (unshare(CLONE_NEWUTS)) {
-		debug("unshare(CLONE_NEWUTS): %d\n", errno);
-	}
-	if (unshare(CLONE_SYSVSEM)) {
-		debug("unshare(CLONE_SYSVSEM): %d\n", errno);
-	}
+//	if (unshare(CLONE_NEWNS)) {
+//		debug("unshare(CLONE_NEWNS): %d\n", errno);
+//	}
+//	if (unshare(CLONE_NEWIPC)) {
+//		debug("unshare(CLONE_NEWIPC): %d\n", errno);
+//	}
+//	if (unshare(0x02000000)) {
+//		debug("unshare(CLONE_NEWCGROUP): %d\n", errno);
+//	}
+//	if (unshare(CLONE_NEWUTS)) {
+//		debug("unshare(CLONE_NEWUTS): %d\n", errno);
+//	}
+//	if (unshare(CLONE_SYSVSEM)) {
+//		debug("unshare(CLONE_SYSVSEM): %d\n", errno);
+//	}
 	// These sysctl's restrict ipc resource usage (by default it's possible
 	// to eat all system memory by creating e.g. lots of large sem sets).
 	// These sysctl's are per-namespace, so we need to set them inside
@@ -2669,9 +2669,9 @@ static int do_sandbox_none(void)
 	// and they are usually run under non-root.
 	// Also since debug is stripped by pkg/csource, we need to do {}
 	// even though we generally don't do {} around single statements.
-	if (unshare(CLONE_NEWPID)) {
-		debug("unshare(CLONE_NEWPID): %d\n", errno);
-	}
+//	if (unshare(CLONE_NEWPID)) {
+//		debug("unshare(CLONE_NEWPID): %d\n", errno);
+//	}
 	int pid = fork();
 	if (pid != 0)
 		return wait_for_loop(pid);
@@ -2682,9 +2682,10 @@ static int do_sandbox_none(void)
 #if SYZ_EXECUTOR || SYZ_NET_DEVICES
 	initialize_netdevices_init();
 #endif
-	if (unshare(CLONE_NEWNET)) {
-		debug("unshare(CLONE_NEWNET): %d\n", errno);
-	}
+// FIXME this causes mad problems on Linux
+//	if (unshare(CLONE_NEWNET)) {
+//		debug("unshare(CLONE_NEWNET): %d\n", errno);
+//	}
 #if SYZ_EXECUTOR || SYZ_DEVLINK_PCI
 	initialize_devlink_pci();
 #endif

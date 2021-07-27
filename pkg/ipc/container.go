@@ -16,12 +16,10 @@ import (
 )
 
 const (
-	image     = "syzkaller-image"
-	idleImage = "idle-amd64"
-	timeout   = 10 * time.Second
-	//FIXME --rm here, containers are not preserved in case of failure
-	//FIXME not using --runtime=runsc --cap-add=ALL
-	dockerArgString = "run -a stdin -a stdout --rm -a stderr -i"
+	image           = "syzkaller-image"
+	idleImage       = "idle-amd64"
+	timeout         = 10 * time.Second
+	dockerArgString = "run -a stdin -a stdout -a stderr -i"
 )
 
 // make a command that invokes the executor directly without using the wrapper
@@ -37,8 +35,13 @@ func MakeExecutorCommand(bin []string) *exec.Cmd {
 }
 
 //count argument takes priority, otherwise timeout
-func MakeBootstrapCommand(bin []string, count uint64, stopTimestamp int64, cores string, usage float64) (*exec.Cmd, error) {
+func MakeBootstrapCommand(bin []string, count uint64, stopTimestamp int64, cores string, usage float64, runtime string,
+	capabilitites string, debug bool) (*exec.Cmd, error) {
 	dockerArgs := strings.Split(dockerArgString, " ")
+	if !debug {
+		// if not in debug mode, remove the container
+		dockerArgs = append(dockerArgs, "--rm")
+	}
 
 	//add core restriction
 	if cores != "" {
@@ -48,6 +51,19 @@ func MakeBootstrapCommand(bin []string, count uint64, stopTimestamp int64, cores
 	//add usage restriction
 	if usage > 0 {
 		dockerArgs = append(dockerArgs, fmt.Sprintf("--cpus=%0.2f", usage))
+	}
+
+	//add runtime
+	if runtime != "" {
+		dockerArgs = append(dockerArgs, fmt.Sprintf("--runtime=%s", runtime))
+	}
+
+	if capabilitites != "" {
+		if capabilitites == "UNCONFINED" {
+			dockerArgs = append(dockerArgs, "--security-opt", "seccomp=unconfined")
+		} else {
+			dockerArgs = append(dockerArgs, fmt.Sprintf("--cap-add=%s", capabilitites))
+		}
 	}
 
 	//add image
@@ -85,6 +101,8 @@ type ContainerRestrictions struct {
 	Usage         float64
 	Count         uint64
 	StopTimestamp int64
+	Runtime       string
+	Capabilities  string
 }
 
 // wraps the standard executor command in a docker command line
@@ -136,7 +154,8 @@ func makeContainerCommand(pid int, bin []string, config *Config, inFile, outFile
 	c.readDone = make(chan []byte, 1)
 	c.exited = make(chan struct{})
 
-	cmd, err := MakeBootstrapCommand(bin, r.Count, r.StopTimestamp, r.Cores, r.Usage)
+	debug := config.Flags&FlagDebug == 1
+	cmd, err := MakeBootstrapCommand(bin, r.Count, r.StopTimestamp, r.Cores, r.Usage, r.Runtime, r.Capabilities, debug)
 	if err != nil {
 		return nil, fmt.Errorf("could not make bootstrap command: %v", err)
 	}

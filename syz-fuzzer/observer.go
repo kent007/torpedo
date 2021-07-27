@@ -11,9 +11,12 @@ import (
 	"github.com/google/syzkaller/pkg/signal"
 	"github.com/google/syzkaller/prog"
 	"github.com/kent007/linux-inspect/top"
+	"io/ioutil"
 	"math"
 	"math/rand"
 	"os"
+	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,15 +25,18 @@ import (
 type FuzzingState int
 
 const (
-	//how long each round should be
-	//the first top measurement takes approximately .2 seconds to complete
-	//so 5.3 seconds gets us 6 top measurements
-	DURATION = 5*time.Second + 300*time.Millisecond
+	//we want the intersection of the proc/stat measurement and `top` to be as in-sync as possible
+	//we also want to avoid any weird edge cases in resource util at the beginning or end
+	//so we run the round for longer than we do for top, so that top can exit cleanly before the containers tear down
+	//this is also important for capturing docker-related util, if the threads are torn down before TOP exits we won't
+	//get any line output for them
+	ROUNDTIMESECONDS = 5
+	ROUNDDURATION    = ROUNDTIMESECONDS * time.Second
+	TOPDURATION      = ROUNDDURATION - 500*time.Millisecond
+	TOPINTERVAL      = 4
+
 	//kernel thread parent
 	KTHREADD = 2
-
-	//number of times a false-positive verification should be attempted
-	VERIFYATTEMPTS = 3
 
 	//shuffletolerance is the percentage of tolerable variation when shuffling programs
 	SHUFFLETOLERANCE = 2.5
@@ -40,6 +46,9 @@ const (
 	DROPTOLERANCE = -10
 	//number of rounds without improvement after which we assume mutate has reached a local maximum
 	MUTATECAP = 15
+
+	//the minimum amount positive score change we need to see before accepting the mutation
+	MINIMPROVEMENT = 1
 
 	ShufflePrograms FuzzingState = iota
 	DropPrograms
@@ -54,6 +63,7 @@ type FuzzingStatus struct {
 	bestScore                float64       //the highest score we've seen
 	last                     []interface{} //stores the last set of work items from the previous round
 	lastScore                float64       //stores the score associated with last
+	totalImprovement         float64       //total improvement over lifetime of programset
 }
 
 //using this as a semaphore
@@ -63,8 +73,10 @@ var sem = make(chan int, 1)
 var counter = int32(0)
 
 //log file
-//TODO have this roll over to a new log file each time the program set changes
-var observerLog *os.File
+var observerLog *os.File = nil
+
+//seed programs
+var seeds []string
 
 //threshold CPU values based on running idle processes (1 or more procs doesn't make a difference in these categories)
 //var thresholds = map[string]float64{
@@ -84,14 +96,13 @@ type roundReport struct {
 }
 
 //contains a goroutine for managing the TOP observations
-func (fuzzer *Fuzzer) observerRoutine(numProcs int, idle bool) {
+func (fuzzer *Fuzzer) observerRoutine(numProcs int, idle bool, runtime string, capabilities string) {
 	//create wait group and set to 1
 	observer := sync.WaitGroup{}
 	observer.Add(1)
 	procGroup := sync.WaitGroup{}
 	procGroup.Add(numProcs)
 
-	observerLog, _ = os.Create("observer.log")
 	dataCSV, _ := os.Create("round-data.csv")
 
 	csvWriter := csv.NewWriter(dataCSV)
@@ -106,28 +117,26 @@ func (fuzzer *Fuzzer) observerRoutine(numProcs int, idle bool) {
 	}
 	//start all procs
 	for _, proc := range fuzzer.procs {
-		if idle {
-			go proc.loopIdle()
-		} else {
-			go proc.loopSynchronized()
-		}
+		go proc.loopSynchronized(runtime, capabilities)
 	}
 
-	utilization := float64(0)
-	categories := []string{"ksoftirq", "kworker",
-		"dockerd", "containerd",
-		"kaudit", "auditd", "systemd-journal"}
-	//FIXME dockerd temporarily removed due to known issue involving tty subsystem
+	//utilization := float64(0)
+	categories := []string{"ksoftirq", "kworker", "dockerd", "containerd", "kaudit", "auditd", "systemd-journal", "runsc", "exe"}
 
 	csvWriter.Write(append(categories, "other", "total"))
 
 	results := make(chan *roundReport, 1)
 
 	//IMPORTANT to set state to invalid value first
-	status := &FuzzingStatus{
-		state: -1,
+	status := &FuzzingStatus{}
+	resetState(status)
+	var currentWork []interface{}
+	if idle {
+		currentWork = make([]interface{}, len(fuzzer.procs))
+		observerLog, _ = os.Create("observer.idle.log")
+	} else {
+		currentWork = fuzzer.getNewPrograms(0)
 	}
-	currentWork := fuzzer.getNewPrograms(0)
 	//do this forever
 	for roundCounter := 1; ; roundCounter++ {
 		//all procs are waiting to select a program
@@ -142,10 +151,11 @@ func (fuzzer *Fuzzer) observerRoutine(numProcs int, idle bool) {
 
 		//done, beginning next round
 		observerLog.WriteString(fmt.Sprintf("Beginning Round %d --------------------\n", roundCounter))
+		writeProgramsToLog(currentWork)
 
 		//calculate next stop timestamp, this is done here because the copy operation above could take some time
-		stopTimestamp := time.Now().Add(DURATION).UnixNano()
-		log.Logf(4, "Observer: next round will end at %d", stopTimestamp)
+		stopTimestamp := time.Now().Add(ROUNDDURATION).UnixNano()
+		topStopTimestamp := stopTimestamp - (500 * time.Millisecond).Nanoseconds()
 
 		//save next timestamp into each proc
 		for _, proc := range fuzzer.procs {
@@ -155,9 +165,11 @@ func (fuzzer *Fuzzer) observerRoutine(numProcs int, idle bool) {
 		//observer signals all procs to execute
 		start := time.Now()
 		observer.Done()
+		log.Logf(1, "Observer: staring round %d", roundCounter)
+		log.Logf(4, "Observer: round %d will end at %d", roundCounter, stopTimestamp)
 
 		//start measuring top
-		go observeRound(stopTimestamp, categories, results)
+		go observeRound(topStopTimestamp, categories, results)
 
 		//wait for ack that all processes have started (or at least completed their wait call)
 		<-sem
@@ -167,113 +179,76 @@ func (fuzzer *Fuzzer) observerRoutine(numProcs int, idle bool) {
 
 		//wait for results
 		report := <-results
-		log.Logf(4, "Observer: round took %s seconds", time.Since(start))
-		utilization = report.usages["total"]
-		observerLog.WriteString(fmt.Sprintf("usage during this period: %.2f (%+v)\n", utilization, report.usages))
+		log.Logf(4, "Observer: round %d took %s seconds", roundCounter, time.Since(start))
+		//utilization = report.usages["total"]
+		observerLog.WriteString(fmt.Sprintf("usage during this period: (%+v)\n", report.usages))
 		ipc.DisplayCPUUsage(report.before, report.after, observerLog)
 		diff, total, _ := ipc.MeasureCore(report.before.All, report.after.All)
-		utilization := 100 * float64(total-diff.Idle) / float64(total)
+		percentUtil := 100 * float64(total-diff.Idle) / float64(total)
 
 		//write to round CSV file
 		var row []string
 		for _, key := range categories {
 			row = append(row, fmt.Sprintf("%f", report.usages[key]))
 		}
-		row = append(row, fmt.Sprintf("%f", report.usages["other"]),
-			fmt.Sprintf("%f", report.usages["total"]))
+		row = append(row, fmt.Sprintf("%f", report.usages["other"]))
 		csvWriter.Write(row)
 		csvWriter.Flush()
 
 		//make decisions about how to conduct the next round, potentially resetting the status
-		currentWork = fuzzer.getPrograms(currentWork, status, utilization)
+		//this should only be done if we're not idling, in which case all will be null
+		if !idle {
+			currentWork = fuzzer.getPrograms(currentWork, status, percentUtil, roundCounter)
+		}
 	}
 
 }
 
 //observe one round until the stop timestamp and report the results
 func observeRound(stopTimestamp int64, categories []string, results chan *roundReport) {
+
 	before, _ := ipc.GetCPUReport()
-	usages, iterations, _ := measureTop(stopTimestamp, KTHREADD, categories)
+	output, _ := top.GetTimed(top.DefaultExecPath, 0, stopTimestamp, TOPINTERVAL)
 	after, _ := ipc.GetCPUReport()
-
-	log.Logf(4, "Observer took %d top measurements", iterations)
-	results <- &roundReport{
-		before: before,
-		usages: usages,
-		after:  after,
-	}
-}
-
-//measure CPU utilization for all children of pid until timestamp expires
-func measureTop(stopTimestamp int64, pid uint64, categories []string) (map[string]float64, int, error) {
-	//this runs until the command times out
-	rows, iterations, err := top.GetTimed(top.DefaultExecPath, 0, stopTimestamp, 1)
-	if err != nil {
-		return nil, -1, err
-	}
+	rows, iterations, _ := top.Parse(output)
 
 	//round up some miscellaneous PIDs from children of kthreadd that aren't running as workers
-	miscPIDs, _ := ipc.GetChildrenOfPID(pid)
-	usage := ipc.GetUsageOfProcs(rows, miscPIDs, categories)
+	miscKernelPIDS, _ := ipc.GetChildrenOfPID(KTHREADD)
+	usage := ipc.GetUsageOfProcs(rows, miscKernelPIDS, categories)
+
 	//divide out the totals to get averages across the period
 	for k, v := range usage {
 		usage[k] = v / float64(iterations)
 	}
 
-	return usage, iterations, nil
+	//currently for debug purposes
+	//observerLog.WriteString(output)
+
+	log.Logf(4, "Observer took %d top measurements", iterations)
+	results <- &roundReport{
+		before: before,
+		usages: usage,
+		after:  after,
+	}
 }
 
-//checkAbnormal accepts a set of CPU utilizations and returns which ones are considered "abnormal" in context
-//func checkAbnormal(usages map[string]float64, thresholds map[string]float64) map[string]bool {
-//	abnormalProcs := map[string]bool{}
-//	for k, v := range usages {
-//		if t, ok := thresholds[k]; ok && v > t {
-//			abnormalProcs[k] = true
-//		}
+//measure CPU utilization for all children of pid until timestamp expires
+//func measureTop(stopTimestamp int64, pid uint64, categories []string) (map[string]float64, int, error) {
+//	//this runs until the command times out
+//	rows, iterations, err := top.GetTimed(top.DefaultExecPath, 0, stopTimestamp, 4)
+//	if err != nil {
+//		return nil, -1, err
 //	}
-//	return abnormalProcs
-//}
-
-//runs the program VERIFYATTEMPTS times and verifies abnormal behavior
-//consumes a set of categories that triggered as abnormal in the initial run
-//on each run, captures usage information and tracks which ones were abnormal
-//removes all false-positive hits from the original set; if set becomes empty, returns nil
-//else returns set of abnormal categories
-//func verifyProgramAbnormality(prog *prog.Prog, f *Fuzzer, abnormal map[string]bool) map[string]bool {
-//	log.Logf(4, "initial categories to check: %+v", abnormal)
-//	env, _ := ipc.MakeEnv(f.config, 0)
-//	results := make(chan *roundReport, 1)
-//	for i := 0; i < VERIFYATTEMPTS; i++ {
-//		var categories []string
-//		for k := range abnormal {
-//			categories = append(categories, k)
-//		}
-//		stopTimestamp := time.Now().Add(DURATION).UnixNano()
-//		r := ipc.ContainerRestrictions{
-//			Cores:         "0",
-//			Usage:         0,
-//			Count:         0,
-//			StopTimestamp: stopTimestamp,
-//		}
 //
-//		//observe the proc individually
-//		go observeRound(stopTimestamp, categories, results)
-//		env.ExecOnCore(f.execOpts, prog, &r)
-//		report := <-results
-//
-//		latestAbnormal := checkAbnormal(report.usages, thresholds)
-//		log.Logf(4, "latest run: %+v", latestAbnormal)
-//		for k := range abnormal {
-//			if _, ok := latestAbnormal[k]; !ok {
-//				log.Logf(4, "no abnormal utilization detected on %s, eliminating", k)
-//				delete(abnormal, k)
-//			}
-//		}
-//		if len(abnormal) == 0 {
-//			return nil
-//		}
+//	//round up some miscellaneous PIDs from children of kthreadd that aren't running as workers
+//	miscPIDs, _ := ipc.GetChildrenOfPID(pid)
+//	usage := ipc.GetUsageOfProcs(rows, miscPIDs, categories)
+//	//divide out the totals to get averages across the period
+//	for k, v := range usage {
+//		usage[k] = v / float64(iterations)
 //	}
-//	return abnormal
+//
+//	return usage, iterations, nil
 //}
 
 //function that implements a state machine for the observer
@@ -281,36 +256,42 @@ func measureTop(stopTimestamp int64, pid uint64, categories []string) (map[strin
 //returns a slice of work items to be completed by the corresponding indexed proc
 /*
 	the state machine currently has 3 states:
-	shuffle -- check if the score has decreased since it was shuffled (tolerate 5% error?)
+	shuffle -- check if the score has decreased since it was shuffled (tolerate % error)
 				go to mutate or drop (mutate being more likely)
-	drop -- see if the current score is significantly worse than it was before (maybe half of what it
-			would be if each program was contributing an equal amount of CPU usage
-	mutate -- perform a mutation on a single, random program. If the score increases, keep it and go back to shuffle
+	drop -- drop a program and see whether or not it was significant
+	mutate -- perform a mutation on a random program. If the score increases significantly,
+				confirm it and log it as the best
+
+this code is very complex
 */
 
-func (fuzzer *Fuzzer) getPrograms(currentPrograms []interface{}, status *FuzzingStatus, currentScore float64) []interface{} {
+func (fuzzer *Fuzzer) getPrograms(currentPrograms []interface{}, status *FuzzingStatus, currentScore float64,
+	roundNumber int) []interface{} {
 	status.roundCounter++
 	percentChangeLast := (currentScore - status.lastScore) / status.lastScore * 100
 	switch status.state {
 	case ShufflePrograms:
 		if math.Abs(percentChangeLast) > SHUFFLETOLERANCE {
+			//measurements didn't match up
 			log.Logf(1, "after shuffle, results changed by more than %f percent (%.2f vs %.2f, %2.2f percent "+
-				"change)", SHUFFLETOLERANCE, currentScore, status.bestScore, percentChangeLast)
+				"change)", SHUFFLETOLERANCE, currentScore, status.lastScore, percentChangeLast)
 			if status.roundCounter > SHUFFLECAP {
+				//failed to converge
 				//TODO add a stat here to indicate that we failed to converge
 				log.Logf(1, "observations did not converge during shuffling, resetting")
 				observerLog.WriteString("observations did not converge during shuffling. ")
 				if status.best != nil {
+					//revert to last known best
 					observerLog.WriteString("reverting to last known good program set...\n")
-					changeState(status, MutatePrograms)
-					return fuzzer.mutateProgram(status.best)
+					goto pickNextState
 				} else {
+					//just start over
 					observerLog.WriteString("generating new programs...\n")
 					resetState(status)
-					return fuzzer.getNewPrograms(status.roundCounter)
+					return fuzzer.getNewPrograms(roundNumber)
 				}
 			} else {
-				//hope that current round was not an outlier, and compare against it
+				//hope that current round was not an outlier, and compare against it instead
 				saveLast(status, currentPrograms, currentScore)
 				observerLog.WriteString(fmt.Sprintf("adjusting target score to %.2f and retrying...\n", currentScore))
 				return shufflePrograms(currentPrograms)
@@ -318,51 +299,54 @@ func (fuzzer *Fuzzer) getPrograms(currentPrograms []interface{}, status *Fuzzing
 		}
 		observerLog.WriteString(fmt.Sprintf("confirmed reproducible score of %.2f\n", currentScore))
 
-		if status.bestScore < currentScore {
-			//the score we converged to is actually better!
+		if status.bestScore+MINIMPROVEMENT <= currentScore {
+			//the score we converged to is actually better by a significant amount!
 			observerLog.WriteString(fmt.Sprintf("new best score %.2f!\n", currentScore))
 			saveBest(status, currentPrograms, currentScore)
 			status.roundsWithoutImprovement = 0
 		} else {
-			log.Logf(2, "score converged, but was not actually better than previously recorded best "+
+			log.Logf(2, "score converged, but was not (significantly?) better than previously recorded best "+
 				"(%.2f vs %.2f)", currentScore, status.bestScore)
-			observerLog.WriteString(fmt.Sprintf("score converged, but was not actually better than previously recorded best "+
-				"(%.2f vs %.2f)\n", currentScore, status.bestScore))
+			observerLog.WriteString(fmt.Sprintf("score converged, but was not (significantly?) better than previously"+
+				" recorded best (%.2f vs %.2f)\n", currentScore, status.bestScore))
 		}
-		//TODO add drop back in later
+	pickNextState:
+		saveLast(status, status.best, status.bestScore)
+		//this always operates on the best program, which has either just been set or needs to be reused
+		//FIXME idling is actually better in some cases than the original program, we want to freeze the core entirely
 		//if rand.Intn(4) == 0 {
+		//	//drop
 		//	changeState(status, DropPrograms)
-		//	//call drop program
+		//	return dropProgram(status.best, 0)
 		//} else {
+		//mutate
 		changeState(status, MutatePrograms)
-		return fuzzer.mutateProgram(currentPrograms)
+		return fuzzer.mutateProgram(status.best)
 		//}
 	case DropPrograms:
-		//TODO double check this
-		var newPrograms []interface{}
+		//FIXME untested
 		if percentChangeLast < DROPTOLERANCE {
 			//program should be put back
-			log.Logf(2, "score dropped by %.2f, restoring program %d...", percentChangeLast, status.roundCounter-1)
-			newPrograms = status.last
+			log.Logf(2, "score dropped by %.2f, restoring program %d...\n", percentChangeLast, status.roundCounter-1)
+			currentPrograms = status.last
 		} else {
+			//save the last set and advance from there
 			log.Logf(2, "score only dropped by %.2f, program %d likely insignificant",
 				percentChangeLast, status.roundCounter-1)
-			newPrograms = currentPrograms
 			observerLog.WriteString(fmt.Sprintf("adjusting best score to %.2f...\n", currentScore))
-			status.bestScore = currentScore
+			saveBest(status, currentPrograms, currentScore)
+			saveLast(status, currentPrograms, currentScore)
 		}
-		saveLast(status, currentPrograms, currentScore)
 		if status.roundCounter == len(currentPrograms) {
 			//done dropping, move to mutate
 			changeState(status, MutatePrograms)
-			newPrograms = fuzzer.mutateProgram(currentPrograms)
+			return fuzzer.mutateProgram(currentPrograms)
 		} else {
 			//drop the current program
-			newPrograms = dropProgram(currentPrograms, status.roundCounter)
+			return dropProgram(currentPrograms, status.roundCounter)
 		}
-		return newPrograms
 	case MutatePrograms:
-		if currentScore > status.bestScore {
+		if currentScore >= status.bestScore+MINIMPROVEMENT {
 			//potentially a new best, save it and switch state to shuffle
 			observerLog.WriteString(fmt.Sprintf("Potentially new best score %f\n", currentScore))
 			saveLast(status, currentPrograms, currentScore)
@@ -370,7 +354,7 @@ func (fuzzer *Fuzzer) getPrograms(currentPrograms []interface{}, status *Fuzzing
 			return shufflePrograms(currentPrograms)
 		} else {
 			//revert
-			log.Logf(2, "reverting last mutation")
+			observerLog.WriteString("reverting last mutation...\n")
 			status.roundsWithoutImprovement++
 			currentPrograms = status.best
 		}
@@ -385,8 +369,9 @@ func (fuzzer *Fuzzer) getPrograms(currentPrograms []interface{}, status *Fuzzing
 			}
 			writeProgramsToLog(status.best)
 			observerLog.WriteString(fmt.Sprintf("best score was %.2f\n", status.bestScore))
+			observerLog.WriteString(fmt.Sprintf("total improvement was %.2f\n", status.totalImprovement))
 			resetState(status)
-			return fuzzer.getNewPrograms(status.roundCounter)
+			return fuzzer.getNewPrograms(roundNumber)
 		} else {
 			//keep mutating
 			saveLast(status, currentPrograms, currentScore)
@@ -416,6 +401,7 @@ func resetState(status *FuzzingStatus) {
 	status.roundCounter = 0
 	status.last = nil
 	status.lastScore = 0
+	status.totalImprovement = 0
 }
 
 //saves the information about the last round
@@ -426,6 +412,9 @@ func saveLast(status *FuzzingStatus, programs []interface{}, score float64) {
 
 //save information about the best round
 func saveBest(status *FuzzingStatus, programs []interface{}, score float64) {
+	if status.bestScore != 0 {
+		status.totalImprovement += score - status.bestScore
+	}
 	status.best = programs
 	status.bestScore = score
 }
@@ -434,7 +423,14 @@ func saveBest(status *FuzzingStatus, programs []interface{}, score float64) {
 //attempt to take items from the workqueue. If none are available,
 //generate or mutate new programs
 func (fuzzer *Fuzzer) getNewPrograms(roundCounter int) []interface{} {
+
+	if observerLog != nil {
+		observerLog.Close()
+	}
+	observerLog, _ = os.Create("../observer." + strconv.Itoa(roundCounter) + ".log")
+
 	newPrograms := make([]interface{}, len(fuzzer.procs))
+
 	generatePeriod := 100
 	if fuzzer.config.Flags&ipc.FlagSignal == 0 {
 		// If we don't have real coverage signal, generate programs more frequently
@@ -447,13 +443,17 @@ func (fuzzer *Fuzzer) getNewPrograms(roundCounter int) []interface{} {
 			var p *prog.Prog
 			ct := fuzzer.choiceTable
 			fuzzerSnapshot := fuzzer.snapshot()
-			if len(fuzzerSnapshot.corpus) == 0 || roundCounter%generatePeriod == 0 {
+			if len(seeds) != 0 {
+				// Choose a seed program
+				p = getSeed(fuzzer.target).P
+				log.Logf(1, "#%v: selected seed", i)
+			} else if len(fuzzerSnapshot.corpus) == 0 || roundCounter%generatePeriod == 0 {
 				// Generate a new prog.
 				p = fuzzer.target.Generate(proc.rnd, prog.RecommendedCalls, ct)
 				log.Logf(1, "#%v: generated", i)
 			} else {
 				// Mutate an existing prog.
-				p := fuzzerSnapshot.chooseProgram(proc.rnd).Clone()
+				p = fuzzerSnapshot.chooseProgram(proc.rnd).Clone()
 				p.Mutate(proc.rnd, prog.RecommendedCalls, ct, fuzzerSnapshot.corpus)
 				log.Logf(1, "#%v: mutated", i)
 			}
@@ -471,7 +471,7 @@ func (fuzzer *Fuzzer) getNewPrograms(roundCounter int) []interface{} {
 
 //creates a copy of the passed slice, shuffles the contents, and returns the shuffled copy
 func shufflePrograms(current []interface{}) []interface{} {
-	log.Logf(3, "shuffling programs...")
+	observerLog.WriteString("shuffling programs...\n")
 	shuffled := make([]interface{}, len(current))
 	copy(shuffled, current)
 	rand.Seed(time.Now().UnixNano())
@@ -481,52 +481,48 @@ func shufflePrograms(current []interface{}) []interface{} {
 
 //drop one program from the array, but save the existing array into the status
 func dropProgram(current []interface{}, dropIndex int) []interface{} {
-	log.Logf(1, "dropping program %d...", dropIndex)
+	observerLog.WriteString(fmt.Sprintf("dropping program %d...\n", dropIndex))
 	dropped := make([]interface{}, len(current))
 	copy(dropped, current)
 	dropped[dropIndex] = nil
 	return dropped
 }
 
-//select a program at random and mutate it
+//apply one mutations
 //save the old array into the table
 //this must perform a deep copy to avoid messing with the original array, in case we need to revert
 func (fuzzer *Fuzzer) mutateProgram(current []interface{}) []interface{} {
 	mutated := make([]interface{}, len(current))
 	copy(mutated, current)
-	var item interface{}
-	var index int
-	for {
-		index = rand.Intn(len(fuzzer.procs))
-		item = mutated[index]
-		if item != nil {
-			break
-		}
-	}
-	log.Logf(2, "mutating program %d...", index)
-	fuzzerSnapshot := fuzzer.snapshot()
-	switch item := item.(type) {
-	case *WorkCandidate:
-		clone := item.p.Clone()
-		clone.Mutate(fuzzer.procs[index].rnd, prog.RecommendedCalls, fuzzer.choiceTable, fuzzerSnapshot.corpus)
-		mutated[index] = &WorkCandidate{
-			clone,
-			item.flags,
-		}
-	case *WorkTriage:
-		clone := item.p.Clone()
-		clone.Mutate(fuzzer.procs[index].rnd, prog.RecommendedCalls, fuzzer.choiceTable, fuzzerSnapshot.corpus)
-		mutated[index] = &WorkTriage{
-			clone,
-			item.call,
-			item.info,
-			item.flags,
+	for index, item := range current {
+		observerLog.WriteString(fmt.Sprintf("mutating program %d...\n", index))
+		fuzzerSnapshot := fuzzer.snapshot()
+		switch item := item.(type) {
+		case *WorkCandidate:
+			clone := item.p.Clone()
+			clone.Mutate(fuzzer.procs[index].rnd, prog.RecommendedCalls, fuzzer.choiceTable, fuzzerSnapshot.corpus)
+			mutated[index] = &WorkCandidate{
+				clone,
+				item.flags,
+			}
+		case *WorkTriage:
+			clone := item.p.Clone()
+			clone.Mutate(fuzzer.procs[index].rnd, prog.RecommendedCalls, fuzzer.choiceTable, fuzzerSnapshot.corpus)
+			mutated[index] = &WorkTriage{
+				clone,
+				item.call,
+				item.info,
+				item.flags,
+			}
 		}
 	}
 	return mutated
 }
 
 func (fuzzer *Fuzzer) addProgramToCorpus(item *WorkTriage, info *ipc.ProgInfo) {
+	if item.call >= len(info.Calls) || item.call >= len(item.p.Calls) {
+		return
+	}
 	prio := signalPrio(item.p, &item.info, item.call)
 	inputSignal := signal.FromRaw(item.info.Signal, prio)
 	newSignal := fuzzer.corpusSignalDiff(inputSignal)
@@ -560,7 +556,7 @@ func (fuzzer *Fuzzer) addProgramToCorpus(item *WorkTriage, info *ipc.ProgInfo) {
 
 func writeProgramsToLog(programs []interface{}) {
 	for i, item := range programs {
-		fmtString := "program %d\n%s\n\n"
+		fmtString := "program %d\n%s\n"
 		switch item := item.(type) {
 		case *WorkTriage:
 			observerLog.WriteString(fmt.Sprintf(fmtString, i, item.p.Serialize()))
@@ -572,6 +568,45 @@ func writeProgramsToLog(programs []interface{}) {
 			observerLog.WriteString(fmt.Sprintf(fmtString, i, "unknown work type"))
 		}
 	}
+}
+
+//read seed programs from this directory
+func (fuzzer *Fuzzer) readSeedPrograms(dir string) error {
+	files, err := ioutil.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var paths []string
+	for _, file := range files {
+		if !file.IsDir() {
+			paths = append(paths, filepath.Join(dir, file.Name()))
+		}
+	}
+	if len(files) == 0 {
+		log.Logf(1, "no seed files in %s", dir)
+		return nil
+	}
+	seeds = paths
+	return nil
+}
+
+func getSeed(target *prog.Target) *prog.LogEntry {
+	// Choose a seed program
+	var p *prog.LogEntry
+	for {
+		last := len(seeds) - 1
+		file := seeds[last]
+		seeds = seeds[:last]
+		data, err := ioutil.ReadFile(file)
+		if err != nil {
+			log.Logf(1, "failed to read log file: %v", err)
+			continue
+		}
+		log.Logf(1, "selected seed program %s", file)
+		p = target.ParseLog(data)[0]
+		break
+	}
+	return p
 }
 
 func (fuzzer *Fuzzer) signalObserver() {

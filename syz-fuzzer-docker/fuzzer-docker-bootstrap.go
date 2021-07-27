@@ -141,8 +141,11 @@ func execute(executor string, executorArgs []string, req *executeReq, progData [
 		}
 	}
 
-	//wait for command to finish
+	//wait for command to finish, on success the executor returns status 1
 	_ = cmd.Wait()
+	//if err != nil {
+	//	log.Printf("executor returned an error: %v", err)
+	//}
 
 	return stdout.Bytes()
 }

@@ -46,21 +46,24 @@ func (proc *Proc) synchronizeWithObserver() {
 	proc.fuzzer.signalObserver()
 }
 
-func (proc *Proc) loopSynchronized() {
+func (proc *Proc) loopSynchronized(runtime string, capabilities string) {
 	r := &ipc.ContainerRestrictions{
 		Cores:         strconv.Itoa(proc.pid),
 		Usage:         1.0,
 		Count:         0,
 		StopTimestamp: 0,
+		Runtime:       runtime,
+		Capabilities:  capabilities,
 	}
 	for {
 		proc.fuzzer.signalObserver()
 		item := <-proc.programSelector
 		//if nil, observer has instructed us to sit out this round
 		if item == nil {
-			log.Logf(1, "Proc %d: sitting out this round", proc.pid)
+			log.Logf(1, "Proc %d: idling this round", proc.pid)
 			proc.synchronizeWithObserver()
-			time.Sleep(1 * time.Second)
+			cmd := ipc.MakeIdleCommand(proc.stopTimestamp, strconv.Itoa(proc.pid))
+			_ = cmd.Run()
 			continue
 		}
 		if item != nil {
@@ -111,6 +114,7 @@ func (proc *Proc) executeOnCoreSynchronized(opts *ipc.ExecOpts, p *prog.Prog, st
 	//grab the latest timestamp
 	r.StopTimestamp = proc.stopTimestamp
 
+	//!!this is required for the manager to track execution
 	proc.logProgram(opts, p)
 
 	atomic.AddUint64(&proc.fuzzer.stats[stat], 1)
