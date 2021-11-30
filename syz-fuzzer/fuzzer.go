@@ -130,6 +130,7 @@ func main() {
 	}
 
 	config, execOpts, err := ipcconfig.Default(target)
+	config.UseShmem = false
 	if err != nil {
 		log.Fatalf("failed to create default ipc config: %v", err)
 	}
@@ -269,7 +270,8 @@ func main() {
 		}
 	}
 
-	go fuzzer.observerRoutine(*flagProcs, *flagTest, *flagRuntime, *flagCaps)
+	// FIXME changed *flagTest to false
+	go fuzzer.observerRoutine(*flagProcs, false, *flagRuntime, *flagCaps)
 
 	if *flagTest {
 		log.Logf(1, "entering dummy loop that doesn't do anything")

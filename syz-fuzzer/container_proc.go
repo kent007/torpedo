@@ -126,7 +126,7 @@ func (proc *Proc) executeOnCoreSynchronized(opts *ipc.ExecOpts, p *prog.Prog, st
 		debug.FreeOSMemory()
 	}
 	log.Logf(2, "result hanged=%v: %s", hanged, output)
-	proc.lastInfo = info
+	proc.lastInfo<-info
 
 	return info
 }
@@ -159,13 +159,15 @@ func (proc *Proc) executeSynchronized(execOpts *ipc.ExecOpts, p *prog.Prog, flag
 	r *ipc.ContainerRestrictions) *ipc.ProgInfo {
 	info := proc.executeOnCoreSynchronized(execOpts, p, stat, r)
 	if flags&ProgTriaged == 0 {
-		calls, extra := proc.fuzzer.checkNewSignal(p, info)
-		for _, callIndex := range calls {
-			proc.enqueueCallTriage(p, flags, callIndex, info.Calls[callIndex])
-		}
-		if extra {
-			proc.enqueueCallTriage(p, flags, -1, info.Extra)
-		}
+		//FIXME nil'd out this information here, will iterate through the calls on a single item instead
+		proc.enqueueCallTriage(p, flags, -2, info.Calls[0])
+		//calls, extra := proc.fuzzer.checkNewSignal(p, info)
+		//for _, callIndex := range calls {
+		//	proc.enqueueCallTriage(p, flags, callIndex, info.Calls[callIndex])
+		//}
+		//if extra {
+		//	proc.enqueueCallTriage(p, flags, -1, info.Extra)
+		//}
 	}
 	return info
 }

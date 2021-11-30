@@ -19,7 +19,7 @@ const (
 	image           = "syzkaller-image"
 	idleImage       = "idle-amd64"
 	timeout         = 10 * time.Second
-	dockerArgString = "run -a stdin -a stdout -a stderr -i"
+	dockerArgString = "run -a stdin -a stdout -a stderr -i --mount type=bind,source=/sys,target=/sys"
 )
 
 // make a command that invokes the executor directly without using the wrapper

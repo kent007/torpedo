@@ -30,10 +30,11 @@ const (
 	//so we run the round for longer than we do for top, so that top can exit cleanly before the containers tear down
 	//this is also important for capturing docker-related util, if the threads are torn down before TOP exits we won't
 	//get any line output for them
-	ROUNDTIMESECONDS = 5
+	// FIXME changed this from 5/4 to 3/2
+	ROUNDTIMESECONDS = 3
 	ROUNDDURATION    = ROUNDTIMESECONDS * time.Second
 	TOPDURATION      = ROUNDDURATION - 500*time.Millisecond
-	TOPINTERVAL      = 4
+	TOPINTERVAL      = 2
 
 	//kernel thread parent
 	KTHREADD = 2
@@ -61,9 +62,11 @@ type FuzzingStatus struct {
 	roundsWithoutImprovement int           //the number of rounds since we had any improvement in the score
 	best                     []interface{} //the programs that produced the best score
 	bestScore                float64       //the highest score we've seen
+	bestInfo                 []*ipc.ProgInfo // info associated with best
 	last                     []interface{} //stores the last set of work items from the previous round
 	lastScore                float64       //stores the score associated with last
-	totalImprovement         float64       //total improvement over lifetime of programset
+	lastInfo                 []*ipc.ProgInfo // info associated with last
+	totalImprovement         float64       //total improvement over lifetime of program set
 }
 
 //using this as a semaphore
@@ -129,7 +132,7 @@ func (fuzzer *Fuzzer) observerRoutine(numProcs int, idle bool, runtime string, c
 
 	//IMPORTANT to set state to invalid value first
 	status := &FuzzingStatus{}
-	resetState(status)
+	resetState(status, numProcs)
 	var currentWork []interface{}
 	if idle {
 		currentWork = make([]interface{}, len(fuzzer.procs))
@@ -269,6 +272,13 @@ func (fuzzer *Fuzzer) getPrograms(currentPrograms []interface{}, status *Fuzzing
 	roundNumber int) []interface{} {
 	status.roundCounter++
 	percentChangeLast := (currentScore - status.lastScore) / status.lastScore * 100
+	currentInfo := make([]*ipc.ProgInfo, len(currentPrograms))
+	for i, work := range currentPrograms {
+		currentInfo[i] = <-fuzzer.procs[i].lastInfo
+		if work, ok := work.(*WorkTriage); ok {
+			fuzzer.addProgramToCorpus(work, currentInfo[i])
+		}
+	}
 	switch status.state {
 	case ShufflePrograms:
 		if math.Abs(percentChangeLast) > SHUFFLETOLERANCE {
@@ -280,19 +290,19 @@ func (fuzzer *Fuzzer) getPrograms(currentPrograms []interface{}, status *Fuzzing
 				//TODO add a stat here to indicate that we failed to converge
 				log.Logf(1, "observations did not converge during shuffling, resetting")
 				observerLog.WriteString("observations did not converge during shuffling. ")
-				if status.best != nil {
+				if status.best[0] != nil {
 					//revert to last known best
 					observerLog.WriteString("reverting to last known good program set...\n")
 					goto pickNextState
 				} else {
 					//just start over
 					observerLog.WriteString("generating new programs...\n")
-					resetState(status)
+					resetState(status, len(currentPrograms))
 					return fuzzer.getNewPrograms(roundNumber)
 				}
 			} else {
 				//hope that current round was not an outlier, and compare against it instead
-				saveLast(status, currentPrograms, currentScore)
+				saveLast(status, currentPrograms, currentScore, currentInfo)
 				observerLog.WriteString(fmt.Sprintf("adjusting target score to %.2f and retrying...\n", currentScore))
 				return shufflePrograms(currentPrograms)
 			}
@@ -302,7 +312,7 @@ func (fuzzer *Fuzzer) getPrograms(currentPrograms []interface{}, status *Fuzzing
 		if status.bestScore+MINIMPROVEMENT <= currentScore {
 			//the score we converged to is actually better by a significant amount!
 			observerLog.WriteString(fmt.Sprintf("new best score %.2f!\n", currentScore))
-			saveBest(status, currentPrograms, currentScore)
+			saveBest(status, currentPrograms, currentScore, currentInfo)
 			status.roundsWithoutImprovement = 0
 		} else {
 			log.Logf(2, "score converged, but was not (significantly?) better than previously recorded best "+
@@ -311,7 +321,7 @@ func (fuzzer *Fuzzer) getPrograms(currentPrograms []interface{}, status *Fuzzing
 				" recorded best (%.2f vs %.2f)\n", currentScore, status.bestScore))
 		}
 	pickNextState:
-		saveLast(status, status.best, status.bestScore)
+		saveLast(status, status.best, status.bestScore, status.bestInfo)
 		//this always operates on the best program, which has either just been set or needs to be reused
 		//FIXME idling is actually better in some cases than the original program, we want to freeze the core entirely
 		//if rand.Intn(4) == 0 {
@@ -323,63 +333,57 @@ func (fuzzer *Fuzzer) getPrograms(currentPrograms []interface{}, status *Fuzzing
 		changeState(status, MutatePrograms)
 		return fuzzer.mutateProgram(status.best)
 		//}
-	case DropPrograms:
+	//case DropPrograms:
 		//FIXME untested
-		if percentChangeLast < DROPTOLERANCE {
-			//program should be put back
-			log.Logf(2, "score dropped by %.2f, restoring program %d...\n", percentChangeLast, status.roundCounter-1)
-			currentPrograms = status.last
-		} else {
-			//save the last set and advance from there
-			log.Logf(2, "score only dropped by %.2f, program %d likely insignificant",
-				percentChangeLast, status.roundCounter-1)
-			observerLog.WriteString(fmt.Sprintf("adjusting best score to %.2f...\n", currentScore))
-			saveBest(status, currentPrograms, currentScore)
-			saveLast(status, currentPrograms, currentScore)
-		}
-		if status.roundCounter == len(currentPrograms) {
-			//done dropping, move to mutate
-			changeState(status, MutatePrograms)
-			return fuzzer.mutateProgram(currentPrograms)
-		} else {
-			//drop the current program
-			return dropProgram(currentPrograms, status.roundCounter)
-		}
+		//if percentChangeLast < DROPTOLERANCE {
+		//	//program should be put back
+		//	log.Logf(2, "score dropped by %.2f, restoring program %d...\n", percentChangeLast, status.roundCounter-1)
+		//	currentPrograms = status.last
+		//} else {
+		//	//save the last set and advance from there
+		//	log.Logf(2, "score only dropped by %.2f, program %d likely insignificant",
+		//		percentChangeLast, status.roundCounter-1)
+		//	observerLog.WriteString(fmt.Sprintf("adjusting best score to %.2f...\n", currentScore))
+		//	saveBest(status, currentPrograms, currentScore)
+		//	saveLast(status, currentPrograms, currentScore)
+		//}
+		//if status.roundCounter == len(currentPrograms) {
+		//	//done dropping, move to mutate
+		//	changeState(status, MutatePrograms)
+		//	return fuzzer.mutateProgram(currentPrograms)
+		//} else {
+		//	//drop the current program
+		//	return dropProgram(currentPrograms, status.roundCounter)
+		//}
 	case MutatePrograms:
 		if currentScore >= status.bestScore+MINIMPROVEMENT {
 			//potentially a new best, save it and switch state to shuffle
 			observerLog.WriteString(fmt.Sprintf("Potentially new best score %f\n", currentScore))
-			saveLast(status, currentPrograms, currentScore)
+			saveLast(status, currentPrograms, currentScore, currentInfo)
 			changeState(status, ShufflePrograms)
 			return shufflePrograms(currentPrograms)
 		} else {
-			//revert
-			observerLog.WriteString("reverting last mutation...\n")
 			status.roundsWithoutImprovement++
+			// reset to "best" programs
 			currentPrograms = status.best
 		}
 		if status.roundsWithoutImprovement == MUTATECAP {
 			//we've reached a local maximum, commit all programs into the corpus and get new programs
 			log.Logf(1, "reached local maximum, generating new programs...")
-			observerLog.WriteString("Local maximum reached: committing all programs to corpus and restarting\n")
-			for i, work := range currentPrograms {
-				if work, ok := work.(*WorkTriage); ok {
-					fuzzer.addProgramToCorpus(work, fuzzer.procs[i].lastInfo)
-				}
-			}
+			observerLog.WriteString("Local maximum reached. Restarting...\n")
 			writeProgramsToLog(status.best)
 			observerLog.WriteString(fmt.Sprintf("best score was %.2f\n", status.bestScore))
 			observerLog.WriteString(fmt.Sprintf("total improvement was %.2f\n", status.totalImprovement))
-			resetState(status)
+			resetState(status, len(currentPrograms))
 			return fuzzer.getNewPrograms(roundNumber)
 		} else {
 			//keep mutating
-			saveLast(status, currentPrograms, currentScore)
+			saveLast(status, currentPrograms, currentScore, currentInfo)
 			return fuzzer.mutateProgram(currentPrograms)
 		}
 	default:
 		//save initial values, shuffle the programs and set the state to shuffle
-		saveLast(status, currentPrograms, currentScore)
+		saveLast(status, currentPrograms, currentScore, currentInfo)
 		observerLog.WriteString(fmt.Sprintf("initial score of %.2f\n", status.lastScore))
 		changeState(status, ShufflePrograms)
 		return shufflePrograms(currentPrograms)
@@ -393,30 +397,34 @@ func changeState(status *FuzzingStatus, newState FuzzingState) {
 }
 
 //reset the state of the `status` object
-func resetState(status *FuzzingStatus) {
+func resetState(status *FuzzingStatus, programs int) {
 	status.state = -1
-	status.best = nil
+	status.best = make([]interface{}, programs)
 	status.bestScore = 0
+	status.bestInfo = make([]*ipc.ProgInfo, programs)
 	status.roundsWithoutImprovement = 0
 	status.roundCounter = 0
-	status.last = nil
+	status.last = make([]interface{}, programs)
 	status.lastScore = 0
+	status.lastInfo = make([]*ipc.ProgInfo, programs)
 	status.totalImprovement = 0
 }
 
 //saves the information about the last round
-func saveLast(status *FuzzingStatus, programs []interface{}, score float64) {
-	status.last = programs
+func saveLast(status *FuzzingStatus, programs []interface{}, score float64, info []*ipc.ProgInfo) {
+	copy(status.last, programs)
 	status.lastScore = score
+	copy(status.lastInfo, info)
 }
 
 //save information about the best round
-func saveBest(status *FuzzingStatus, programs []interface{}, score float64) {
+func saveBest(status *FuzzingStatus, programs []interface{}, score float64, info []*ipc.ProgInfo) {
 	if status.bestScore != 0 {
 		status.totalImprovement += score - status.bestScore
 	}
-	status.best = programs
+	copy(status.best, programs)
 	status.bestScore = score
+	copy(status.bestInfo, info)
 }
 
 //generate a new array of programs
@@ -508,6 +516,11 @@ func (fuzzer *Fuzzer) mutateProgram(current []interface{}) []interface{} {
 		case *WorkTriage:
 			clone := item.p.Clone()
 			clone.Mutate(fuzzer.procs[index].rnd, prog.RecommendedCalls, fuzzer.choiceTable, fuzzerSnapshot.corpus)
+
+			if item.call > len(clone.Calls) - 1 {
+				item.call = -1
+			}
+
 			mutated[index] = &WorkTriage{
 				clone,
 				item.call,
@@ -519,31 +532,56 @@ func (fuzzer *Fuzzer) mutateProgram(current []interface{}) []interface{} {
 	return mutated
 }
 
-func (fuzzer *Fuzzer) addProgramToCorpus(item *WorkTriage, info *ipc.ProgInfo) {
-	if item.call >= len(info.Calls) || item.call >= len(item.p.Calls) {
-		return
-	}
-	prio := signalPrio(item.p, &item.info, item.call)
-	inputSignal := signal.FromRaw(item.info.Signal, prio)
+
+//func (fuzzer *Fuzzer) compareNewCoverage(item1, item2 interface{}, info1, info2 *ipc.ProgInfo) int {
+//	//return > 0 if item 1 is bigger, 0 if same, -1 if item 1 is smaller
+//
+//	var program1, program2 *prog.Prog
+//	switch item := item1.(type) {
+//	case *WorkCandidate:
+//		program1 = item.p
+//		program2 = item2.(*WorkCandidate).p
+//	case *WorkTriage:
+//		program1 = item.p
+//		program2 = item2.(*WorkTriage).p
+//	}
+//
+//	if len(program1.Calls) != len(info1.Calls) || len(program2.Calls) != len(info2.Calls) {
+//		log.Logf(1, "program and info are desynced")
+//		log.Logf(1, "program was %s", program1.String())
+//		log.Logf(1, "info was %+v", info1)
+//		observerLog.WriteString("program and info are desynced\n")
+//		return 0
+//	}
+//
+//	calls1, _ := fuzzer.checkNewSignal(program1, info1)
+//	calls2, _ := fuzzer.checkNewSignal(program2, info2)
+//	return len(calls1) - len(calls2)
+//}
+
+func sendNewToManager(fuzzer *Fuzzer, item *WorkTriage, info *ipc.ProgInfo, callIndex int) {
+	prio := signalPrio(item.p, &info.Calls[callIndex], callIndex)
+	inputSignal := signal.FromRaw(info.Calls[callIndex].Signal, prio)
 	newSignal := fuzzer.corpusSignalDiff(inputSignal)
 	if newSignal.Empty() {
+		//log.Logf(3, "call %d: no new signal")
 		return
 	}
 	callName := ".extra"
 	logCallName := "extra"
-	if item.call != -1 {
-		callName = item.p.Calls[item.call].Meta.Name
-		logCallName = fmt.Sprintf("call #%v %v", item.call, callName)
+	if callIndex != -1 {
+		callName = item.p.Calls[callIndex].Meta.Name
+		logCallName = fmt.Sprintf("call #%v %v", callIndex, callName)
 	}
 
 	var inputCover cover.Cover
-	_, thisCover := getSignalAndCover(item.p, info, item.call)
+	_, thisCover := getSignalAndCover(item.p, info, callIndex)
 	inputCover.Merge(thisCover)
 
 	data := item.p.Serialize()
 	sig := hash.Hash(data)
 
-	log.Logf(2, "added new input for %v to corpus:\n%s", logCallName, data)
+	log.Logf(2, "call %d: added new input for %v to corpus:\n%s", callIndex, logCallName, data)
 	fuzzer.sendInputToManager(rpctype.RPCInput{
 		Call:   callName,
 		Prog:   data,
@@ -552,6 +590,17 @@ func (fuzzer *Fuzzer) addProgramToCorpus(item *WorkTriage, info *ipc.ProgInfo) {
 	})
 
 	fuzzer.addInputToCorpus(item.p, inputSignal, sig)
+}
+
+// send all new coverage at once
+func (fuzzer *Fuzzer) addProgramToCorpus(item *WorkTriage, info *ipc.ProgInfo) {
+	if item.call == -1 {
+		sendNewToManager(fuzzer, item, info, item.call)
+	} else {
+		for i := 0; i < len(item.p.Calls); i++ {
+			sendNewToManager(fuzzer, item, info, i)
+		}
+	}
 }
 
 func writeProgramsToLog(programs []interface{}) {

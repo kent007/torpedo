@@ -31,7 +31,7 @@ type Proc struct {
 	observer          *sync.WaitGroup
 	procGroup         *sync.WaitGroup
 	stopTimestamp     int64
-	lastInfo          *ipc.ProgInfo
+	lastInfo          chan *ipc.ProgInfo
 	programSelector   chan interface{}
 	env               *ipc.Env
 	rnd               *rand.Rand
@@ -60,6 +60,7 @@ func newProc(fuzzer *Fuzzer, pid int, observer *sync.WaitGroup, procGroup *sync.
 		rnd:               rnd,
 		observer:          observer,
 		procGroup:         procGroup,
+		lastInfo:          make(chan *ipc.ProgInfo),
 		programSelector:   make(chan interface{}, 1),
 		execOpts:          fuzzer.execOpts,
 		execOptsCover:     &execOptsCover,

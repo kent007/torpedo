@@ -331,6 +331,9 @@ func createConfig(target *prog.Target,
 	features *host.Features, featuresFlags csource.Features) (
 	*ipc.Config, *ipc.ExecOpts) {
 	config, execOpts, err := ipcconfig.Default(target)
+	if *flagContainer {
+		config.UseShmem = false
+	}
 	if err != nil {
 		log.Fatalf("%v", err)
 	}

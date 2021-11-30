@@ -216,12 +216,13 @@ func RunManager(cfg *mgrconfig.Config, target *prog.Target, sysTarget *targets.T
 			executed := mgr.stats.execTotal.get()
 			crashes := mgr.stats.crashes.get()
 			signal := mgr.stats.corpusSignal.get()
+			cover := mgr.stats.corpusCover.get()
 			mgr.mu.Unlock()
 			numReproducing := atomic.LoadUint32(&mgr.numReproducing)
 			numFuzzing := atomic.LoadUint32(&mgr.numFuzzing)
 
-			log.Logf(0, "VMs %v, executed %v, cover %v, crashes %v, repro %v",
-				numFuzzing, executed, signal, crashes, numReproducing)
+			log.Logf(0, "VMs %v, executed %v, cover %v, signal %v, crashes %v, repro %v",
+				numFuzzing, executed, cover, signal, crashes, numReproducing)
 		}
 	}()
 
@@ -567,7 +568,7 @@ func (mgr *Manager) runInstance(index int) (*Crash, error) {
 	cmd := instance.FuzzerCmd(fuzzerBin, executorCmd, fmt.Sprintf("vm-%v", index),
 		mgr.cfg.TargetOS, mgr.cfg.TargetArch, fwdAddr, mgr.cfg.Sandbox, mgr.cfg.Seeds, mgr.cfg.Runtime, mgr.cfg.Capabilities,
 		procs, fuzzerV, mgr.cfg.Cover, *flagDebug, false, false)
-	outc, errc, err := inst.Run(12*time.Hour, mgr.vmStop, cmd)
+	outc, errc, err := inst.Run(16*time.Hour, mgr.vmStop, cmd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to run fuzzer: %v", err)
 	}

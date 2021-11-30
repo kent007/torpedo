@@ -346,7 +346,7 @@ var List = map[string]map[string]*Target{
 }
 
 var oses = map[string]osCommon{
-	//FIXME disabling shmem and fork server for linux targets
+	//FIXME disabling fork server + shmem for linux targets
 	"linux": {
 		SyscallNumbers:         true,
 		SyscallPrefix:          "__NR_",

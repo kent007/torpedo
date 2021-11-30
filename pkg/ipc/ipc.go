@@ -159,7 +159,6 @@ func MakeEnv(config *Config, pid int) (*Env, error) {
 	var inf, outf *os.File
 	var inmem, outmem []byte
 	if config.UseShmem {
-		log.Logf(3, "Shared memory should not be active!")
 		var err error
 		inf, inmem, err = osutil.CreateMemMappedFile(prog.ExecBufferSize)
 		if err != nil {
@@ -286,7 +285,7 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInf
 	if env.cmd == nil {
 		tmpDirPath := "./"
 		atomic.AddUint64(&env.StatRestarts, 1)
-		//make a command in a container
+		//make the command
 		env.cmd, err0 = makeCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath)
 	}
 
@@ -298,7 +297,8 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInf
 		return
 	}
 
-	//TODO run this in a loop and merge all coverage/signal information together to return a better bundle
+	//TODO this is where they try to read the information back from shared memory. Might need to hack this so it reads
+	// from the output pipe from the container
 	info, err0 = env.parseOutput(p)
 	if err0 != nil {
 		log.Logf(1, "Error parsing output: %v", err0)
@@ -728,7 +728,6 @@ func (c *command) wait() error {
 	return err
 }
 
-//TODO this can be simplified to not read any results
 func (c *command) exec(opts *ExecOpts, progData []byte) (output []byte, hanged bool, err0 error) {
 	req := &executeReq{
 		magic:     inMagic,
