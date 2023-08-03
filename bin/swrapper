@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+strace -ff -o executor.log /syz-executor $@
+
+mkdir logs
+cp executor.log.* logs/
